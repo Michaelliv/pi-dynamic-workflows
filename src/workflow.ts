@@ -59,6 +59,13 @@ type AnyNode = Node & { [key: string]: any; start: number; end: number };
 
 const DETERMINISM_BLOCKLIST = /\bDate\s*\.\s*now\b|\bMath\s*\.\s*random\b|\bnew\s+Date\s*\(\s*\)/;
 
+type BridgeMessage =
+  | { type: "log"; message: string }
+  | { type: "phase"; title: string }
+  | { type: "agentStart"; label: string; phase?: string; prompt: string }
+  | { type: "agentEnd"; label: string; phase?: string; result: unknown }
+  | { type: "agent"; prompt: string; label: string; phase?: string; opts?: AgentOptions };
+
 export async function runWorkflow<T = unknown>(
   script: string,
   options: WorkflowRunOptions = {},
@@ -67,141 +74,332 @@ export async function runWorkflow<T = unknown>(
   const { meta, body } = parseWorkflowScript(script);
   const state: RuntimeState = { logs: [], phases: [], agentCount: 0, spent: 0 };
   const agentRunner = options.agent ?? new WorkflowAgent(options);
-  const concurrency = Math.max(
-    1,
-    Math.min(options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2), 16),
-  );
-  const limiter = createLimiter(concurrency);
-
-  const log = (message: string) => {
-    const text = String(message);
-    state.logs.push(text);
-    options.onLog?.(text);
-  };
-
-  const phase = (title: string) => {
-    state.currentPhase = title;
-    if (!state.phases.includes(title)) state.phases.push(title);
-    options.onPhase?.(title);
-  };
-
-  const budget = Object.freeze({
-    total: options.tokenBudget ?? null,
-    spent: () => state.spent,
-    remaining: () => (options.tokenBudget == null ? Infinity : Math.max(0, options.tokenBudget - state.spent)),
-  });
+  const tokenBudget = options.tokenBudget ?? null;
+  const cwd = options.cwd ?? process.cwd();
 
   const throwIfAborted = () => {
     if (options.signal?.aborted) throw new Error("workflow aborted");
   };
 
-  const agent = async (prompt: string, agentOptions: AgentOptions = {}) => {
-    throwIfAborted();
-    if (budget.total !== null && budget.remaining() <= 0) throw new Error("workflow token budget exhausted");
-    const assignedPhase = agentOptions.phase ?? state.currentPhase;
-    const requestedLabel = agentOptions.label?.trim();
-    return limiter(async () => {
-      state.agentCount++;
-      const label = requestedLabel || defaultAgentLabel(assignedPhase, state.agentCount);
-      options.onAgentStart?.({ label, phase: assignedPhase, prompt });
-      try {
+  // Single host-realm bridge function. Every cross-realm call goes through here.
+  // For sync message types (log/phase/agentStart/agentEnd) it returns synchronously.
+  // For async (agent) it returns a host Promise whose resolved value is a JSON string.
+  // Any host error is wrapped as `new Error(message)` at the sandbox boundary so the
+  // sandbox never receives a host-realm Error (which would expose host Function via
+  // `error.constructor.constructor`).
+  const __bridge = (msg: BridgeMessage): unknown => {
+    if (msg.type === "log") {
+      const text = String(msg.message);
+      state.logs.push(text);
+      options.onLog?.(text);
+      return undefined;
+    }
+    if (msg.type === "phase") {
+      const title = String(msg.title);
+      state.currentPhase = title;
+      if (!state.phases.includes(title)) state.phases.push(title);
+      options.onPhase?.(title);
+      return undefined;
+    }
+    if (msg.type === "agentStart") {
+      state.agentCount += 1;
+      options.onAgentStart?.({ label: msg.label, phase: msg.phase, prompt: msg.prompt });
+      return undefined;
+    }
+    if (msg.type === "agentEnd") {
+      options.onAgentEnd?.({ label: msg.label, phase: msg.phase, result: msg.result });
+      return undefined;
+    }
+    if (msg.type === "agent") {
+      // Async path: return a Promise that resolves to a JSON string.
+      return (async () => {
         throwIfAborted();
-        const result = await agentRunner.run(prompt, {
-          label,
-          schema: agentOptions.schema,
+        const opts = msg.opts ?? {};
+        const result = await agentRunner.run(msg.prompt, {
+          label: msg.label,
+          schema: opts.schema,
           signal: options.signal,
-          instructions: buildAgentInstructions(assignedPhase, agentOptions),
+          instructions: buildAgentInstructions(msg.phase, opts),
         } as any);
         throwIfAborted();
-        state.spent += estimateTokens(result);
-        options.onAgentEnd?.({ label, phase: assignedPhase, result });
-        return result;
+        const tokensSpent = estimateTokens(result);
+        // Always return a string so the sandbox can JSON.parse with sandbox-realm JSON
+        // and never holds a host-realm object reference.
+        return JSON.stringify({ result: result === undefined ? null : result, tokensSpent });
+      })();
+    }
+    throw new Error(`unknown bridge message type: ${(msg as { type: string }).type}`);
+  };
+
+  // Empty vm context. The sandbox uses its own realm intrinsics — passing host JSON,
+  // Math, Array, Object, etc. would expose host-realm Function via `.constructor`
+  // (e.g. `JSON.constructor.constructor("return process")()` reaches host process).
+  // `codeGeneration.strings: false` blocks eval / new Function / new AsyncFunction
+  // even via sandbox intrinsics, so the script cannot synthesize new code.
+  const context = vm.createContext(
+    { __bridge },
+    {
+      name: meta.name || "workflow",
+      codeGeneration: { strings: false, wasm: false },
+    },
+  );
+
+  const concurrency = Math.max(
+    1,
+    Math.min(options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2), 16),
+  );
+
+  // Bootstrap runs in the sandbox realm and defines all workflow globals as
+  // sandbox-realm closures that capture __bridge in local scope. The script body
+  // sees only sandbox-realm values and cannot reach __bridge through `globalThis`.
+  const bootstrapSource = `
+"use strict";
+const __b = __bridge;
+delete globalThis.__bridge;
+
+const __aborted = { value: false };
+const __state = { spent: 0, agentCount: 0, currentPhase: undefined };
+const __tokenBudget = ${JSON.stringify(tokenBudget)};
+const __cwd = ${JSON.stringify(cwd)};
+const __args = ${JSON.stringify(options.args === undefined ? null : options.args)};
+const __concurrency = ${JSON.stringify(concurrency)};
+
+const __sanitizeError = (e) => {
+  const msg = (e && typeof e === "object" && "message" in e) ? String(e.message) : String(e);
+  return new Error(msg);
+};
+
+const __callBridgeSync = (msg) => {
+  try {
+    __b(msg);
+  } catch (e) {
+    throw __sanitizeError(e);
+  }
+};
+
+const __callBridgeAsync = async (msg) => {
+  let s;
+  try {
+    s = await __b(msg);
+  } catch (e) {
+    throw __sanitizeError(e);
+  }
+  return s;
+};
+
+const __jsonClone = (v) => {
+  if (v === undefined) return undefined;
+  try {
+    return JSON.parse(JSON.stringify(v));
+  } catch (e) {
+    throw __sanitizeError(e);
+  }
+};
+
+const __createLimiter = (limit) => {
+  let active = 0;
+  const queue = [];
+  const next = () => {
+    active--;
+    const fn = queue.shift();
+    if (fn) fn();
+  };
+  return async (fn) => {
+    if (active >= limit) {
+      await new Promise((resolve) => queue.push(resolve));
+    }
+    active++;
+    try {
+      return await fn();
+    } finally {
+      next();
+    }
+  };
+};
+
+const __defaultLabel = (phase, index) =>
+  phase ? phase + " agent " + index : "agent " + index;
+
+const __limiter = __createLimiter(__concurrency);
+
+globalThis.log = function log(message) {
+  __callBridgeSync({ type: "log", message: String(message) });
+};
+
+globalThis.phase = function phase(title) {
+  const t = String(title);
+  __state.currentPhase = t;
+  __callBridgeSync({ type: "phase", title: t });
+};
+
+globalThis.agent = async function agent(prompt, agentOptions) {
+  if (__aborted.value) throw new Error("workflow aborted");
+  if (__tokenBudget !== null && __tokenBudget - __state.spent <= 0) {
+    throw new Error("workflow token budget exhausted");
+  }
+  const opts = agentOptions || {};
+  const assignedPhase = (opts.phase !== undefined && opts.phase !== null)
+    ? String(opts.phase)
+    : __state.currentPhase;
+  const requested = (opts.label !== undefined && opts.label !== null)
+    ? String(opts.label).trim()
+    : "";
+  return __limiter(async () => {
+    __state.agentCount += 1;
+    const label = requested || __defaultLabel(assignedPhase, __state.agentCount);
+    const promptStr = String(prompt);
+    // Round-trip opts so host receives sandbox-realm-cloned primitives only.
+    const safeOpts = __jsonClone({
+      label: opts.label,
+      phase: opts.phase,
+      schema: opts.schema,
+      model: opts.model,
+      isolation: opts.isolation,
+      agentType: opts.agentType,
+    });
+    __callBridgeSync({ type: "agentStart", label, phase: assignedPhase, prompt: promptStr });
+    try {
+      const s = await __callBridgeAsync({
+        type: "agent",
+        prompt: promptStr,
+        label,
+        phase: assignedPhase,
+        opts: safeOpts,
+      });
+      // s is a host-realm string; JSON.parse with sandbox-realm JSON produces a sandbox-realm value.
+      const parsed = (s === null || s === undefined) ? { result: null, tokensSpent: 0 } : JSON.parse(String(s));
+      __state.spent += (parsed && typeof parsed.tokensSpent === "number") ? parsed.tokensSpent : 0;
+      __callBridgeSync({ type: "agentEnd", label, phase: assignedPhase, result: parsed.result });
+      return parsed.result;
+    } catch (error) {
+      const sanitized = __sanitizeError(error);
+      __callBridgeSync({ type: "agentEnd", label, phase: assignedPhase, result: null });
+      if (__aborted.value) throw sanitized;
+      __callBridgeSync({ type: "log", message: "agent " + label + " failed: " + sanitized.message });
+      return null;
+    }
+  });
+};
+
+globalThis.parallel = async function parallel(thunks) {
+  if (__aborted.value) throw new Error("workflow aborted");
+  if (!Array.isArray(thunks)) {
+    throw new TypeError("parallel() expects an array of functions");
+  }
+  for (const thunk of thunks) {
+    if (typeof thunk !== "function") {
+      throw new TypeError(
+        "parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)",
+      );
+    }
+  }
+  return Promise.all(
+    thunks.map(async (thunk, index) => {
+      try {
+        return await thunk();
       } catch (error) {
-        if (options.signal?.aborted) throw error;
-        log(`agent ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
-        options.onAgentEnd?.({ label, phase: assignedPhase, result: null });
+        const sanitized = __sanitizeError(error);
+        if (__aborted.value) throw sanitized;
+        __callBridgeSync({ type: "log", message: "parallel[" + index + "] failed: " + sanitized.message });
         return null;
       }
-    });
-  };
+    }),
+  );
+};
 
-  const parallel = async (thunks: Array<() => Promise<unknown>>) => {
-    throwIfAborted();
-    if (!Array.isArray(thunks)) throw new TypeError("parallel() expects an array of functions");
-    if (thunks.some((thunk) => typeof thunk !== "function")) {
-      throw new TypeError("parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)");
-    }
-    return Promise.all(
-      thunks.map(async (thunk, index) => {
-        try {
-          return await thunk();
-        } catch (error) {
-          if (options.signal?.aborted) throw error;
-          log(`parallel[${index}] failed: ${error instanceof Error ? error.message : String(error)}`);
-          return null;
-        }
-      }),
-    );
-  };
-
-  const pipeline = async (
-    items: unknown[],
-    ...stages: Array<(prev: unknown, original: unknown, index: number) => unknown>
-  ) => {
-    throwIfAborted();
-    if (!Array.isArray(items)) throw new TypeError("pipeline() expects an array as the first argument");
-    if (stages.some((stage) => typeof stage !== "function")) {
+globalThis.pipeline = async function pipeline(items, ...stages) {
+  if (__aborted.value) throw new Error("workflow aborted");
+  if (!Array.isArray(items)) {
+    throw new TypeError("pipeline() expects an array as the first argument");
+  }
+  for (const stage of stages) {
+    if (typeof stage !== "function") {
       throw new TypeError("pipeline() stages must be functions: pipeline(items, item => ..., result => ...)");
     }
-    return Promise.all(
-      items.map(async (item, index) => {
-        let value: unknown = item;
-        for (const stage of stages) {
-          try {
-            throwIfAborted();
-            value = await stage(value, item, index);
-            throwIfAborted();
-          } catch (error) {
-            if (options.signal?.aborted) throw error;
-            log(`pipeline[${index}] failed: ${error instanceof Error ? error.message : String(error)}`);
-            return null;
-          }
+  }
+  return Promise.all(
+    items.map(async (item, index) => {
+      let value = item;
+      for (const stage of stages) {
+        try {
+          if (__aborted.value) throw new Error("workflow aborted");
+          value = await stage(value, item, index);
+          if (__aborted.value) throw new Error("workflow aborted");
+        } catch (error) {
+          const sanitized = __sanitizeError(error);
+          if (__aborted.value) throw sanitized;
+          __callBridgeSync({
+            type: "log",
+            message: "pipeline[" + index + "] failed: " + sanitized.message,
+          });
+          return null;
         }
-        return value;
-      }),
-    );
+      }
+      return value;
+    }),
+  );
+};
+
+globalThis.budget = Object.freeze({
+  total: __tokenBudget,
+  spent: () => __state.spent,
+  remaining: () => __tokenBudget === null ? Infinity : Math.max(0, __tokenBudget - __state.spent),
+});
+
+globalThis.args = __args;
+globalThis.cwd = __cwd;
+globalThis.process = Object.freeze({ cwd: () => __cwd });
+globalThis.console = Object.freeze({
+  log: (m) => __callBridgeSync({ type: "log", message: String(m) }),
+  info: (m) => __callBridgeSync({ type: "log", message: String(m) }),
+  warn: (m) => __callBridgeSync({ type: "log", message: "[warn] " + String(m) }),
+  error: (m) => __callBridgeSync({ type: "log", message: "[error] " + String(m) }),
+});
+
+globalThis.__setAborted = () => { __aborted.value = true; };
+`;
+
+  new vm.Script(bootstrapSource, { filename: "__workflow_bootstrap__.js" }).runInContext(context);
+
+  const onAbort = () => {
+    try {
+      new vm.Script("__setAborted();", { filename: "__workflow_abort__.js" }).runInContext(context);
+    } catch {
+      // context may already be torn down; ignore.
+    }
   };
+  if (options.signal) {
+    if (options.signal.aborted) onAbort();
+    else options.signal.addEventListener("abort", onAbort, { once: true });
+  }
 
-  const context = vm.createContext({
-    agent,
-    parallel,
-    pipeline,
-    log,
-    phase,
-    args: options.args,
-    cwd: options.cwd ?? process.cwd(),
-    process: Object.freeze({ cwd: () => options.cwd ?? process.cwd() }),
-    budget,
-    console: {
-      log,
-      info: log,
-      warn: (m: unknown) => log(`[warn] ${String(m)}`),
-      error: (m: unknown) => log(`[error] ${String(m)}`),
-    },
-    JSON,
-    Math,
-    Array,
-    Object,
-    String,
-    Number,
-    Boolean,
-    Set,
-    Map,
-    Promise,
-  });
+  let result: unknown;
+  try {
+    // Wrap the body in an inner async IIFE and JSON.stringify the result inside the
+    // sandbox so the value reaching the host is a primitive string. This both
+    // (a) yields host-realm output for callers and (b) prevents the sandbox from
+    // handing the host a reference whose prototype chain leads back into the sandbox.
+    const wrapped = `(async () => {
+  const __r = await (async () => {
+${body}
+  })();
+  return JSON.stringify(__r === undefined ? null : __r);
+})()`;
+    const serialized = await new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(
+      context,
+    );
+    result = serialized == null ? null : JSON.parse(String(serialized));
+  } finally {
+    options.signal?.removeEventListener("abort", onAbort);
+    // Remove the abort hook from the context so it can be safely garbage-collected
+    // and so a leaked reference can't be used after the workflow returns.
+    try {
+      new vm.Script("delete globalThis.__setAborted;", { filename: "__workflow_cleanup__.js" }).runInContext(context);
+    } catch {
+      // ignore
+    }
+  }
 
-  const wrapped = `(async () => {\n${body}\n})()`;
-  const result = await new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context);
   return {
     meta,
     result: result as T,
@@ -314,28 +512,6 @@ function validateMeta(meta: unknown): asserts meta is WorkflowMeta {
       }
     }
   }
-}
-
-function createLimiter(limit: number) {
-  let active = 0;
-  const queue: Array<() => void> = [];
-  const next = () => {
-    active--;
-    queue.shift()?.();
-  };
-  return async <T>(fn: () => Promise<T>): Promise<T> => {
-    if (active >= limit) await new Promise<void>((resolve) => queue.push(resolve));
-    active++;
-    try {
-      return await fn();
-    } finally {
-      next();
-    }
-  };
-}
-
-function defaultAgentLabel(phase: string | undefined, index: number): string {
-  return phase ? `${phase} agent ${index}` : `agent ${index}`;
 }
 
 function buildAgentInstructions(phase: string | undefined, options: AgentOptions): string | undefined {
