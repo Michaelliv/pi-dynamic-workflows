@@ -57,13 +57,12 @@ export class WorkflowAgent {
       customTools.push(createStructuredOutputTool({ schema: options.schema, capture }) as unknown as ToolDefinition);
     }
 
+    const agentDir = getAgentDir();
     const { session } = await createAgentSession({
       cwd: this.cwd,
-      agentDir: getAgentDir(),
-      sessionManager: SessionManager.inMemory(),
-      settingsManager: SettingsManager.inMemory({
-        compaction: { enabled: false },
-      }),
+      agentDir,
+      sessionManager: SessionManager.inMemory(this.cwd),
+      settingsManager: SettingsManager.create(this.cwd, agentDir),
       customTools,
       ...this.sessionOptions,
     });

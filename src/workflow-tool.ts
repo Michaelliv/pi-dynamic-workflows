@@ -88,6 +88,10 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           args: params.args,
           signal,
           concurrency: options.concurrency,
+          session: {
+            modelRegistry: ctx.modelRegistry,
+            model: ctx.model,
+          },
           onLog(message) {
             snapshot.logs.push(message);
             update();
