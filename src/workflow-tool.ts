@@ -30,6 +30,14 @@ export type WorkflowToolInput = {
   args?: unknown;
 };
 
+const workflowDisplayOptions = {
+  key: "workflow",
+  streamToolUpdates: true,
+  maxAgents: 4,
+  maxLogs: 1,
+  showResultPreviews: false,
+} as const;
+
 export interface WorkflowToolOptions {
   cwd?: string;
   concurrency?: number;
@@ -69,14 +77,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       const script = normalizeWorkflowScript(params.script);
       const parsed = parseWorkflowScript(script);
       let snapshot: WorkflowSnapshot = createWorkflowSnapshot(parsed.meta);
-      const displayOptions = {
-        key: "workflow",
-        streamToolUpdates: true,
-        maxAgents: 4,
-        maxLogs: 1,
-        showResultPreviews: false,
-      };
-      const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, displayOptions);
+      const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, workflowDisplayOptions);
 
       const update = () => {
         snapshot = recomputeWorkflowSnapshot(snapshot);
@@ -180,11 +181,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
     renderResult(result, { isPartial }, theme) {
       const snapshot = result.details as WorkflowSnapshot | undefined;
       if (snapshot?.name) {
-        return new Text(
-          renderWorkflowText(snapshot, !isPartial, { maxAgents: 4, maxLogs: 1, showResultPreviews: false }),
-          0,
-          0,
-        );
+        return new Text(renderWorkflowText(snapshot, !isPartial, workflowDisplayOptions), 0, 0);
       }
       const text = result.content?.[0];
       return new Text(text?.type === "text" ? text.text : theme.fg("muted", "workflow"), 0, 0);
