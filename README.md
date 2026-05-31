@@ -75,6 +75,16 @@ return { inventory, summary }
 
 Phases are discovered as the script runs, so conditional and loop-created phases work naturally. If a branch is skipped, its phase does not show up as an empty progress row.
 
+### Editor IntelliSense
+
+Reusable workflow files can opt into editor hints for workflow globals:
+
+```js
+/// <reference types="pi-dynamic-workflows/workflow" />
+```
+
+This declares `agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `cwd`, and `budget` for TypeScript-aware editors.
+
 ### Available globals
 
 | Global | Description |

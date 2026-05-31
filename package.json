@@ -9,12 +9,16 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./workflow": {
+      "types": "./types/workflow.d.ts"
     }
   },
   "files": [
     "dist/",
     "extensions/",
     "src/",
+    "types/",
     "README.md"
   ],
   "scripts": {
