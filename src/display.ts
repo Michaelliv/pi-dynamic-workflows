@@ -17,7 +17,6 @@ export interface WorkflowSnapshot {
   name: string;
   description?: string;
   phases: string[];
-  dynamicPhases?: string[];
   currentPhase?: string;
   logs: string[];
   agents: WorkflowAgentSnapshot[];
@@ -49,7 +48,6 @@ export function createWorkflowSnapshot(meta: WorkflowMeta): WorkflowSnapshot {
     name: meta.name,
     description: meta.description,
     phases: [],
-    dynamicPhases: [],
     logs: [],
     agents: [],
     agentCount: 0,
@@ -153,7 +151,6 @@ export function renderWorkflowLines(snapshot: WorkflowSnapshot, options: Workflo
     const agents = snapshot.agents.filter((agent) => agent.phase === phase);
     if (agents.length === 0 && snapshot.currentPhase !== phase) continue;
     for (const agent of agents) rendered.add(agent);
-    const phaseLabel = snapshot.dynamicPhases?.includes(phase) ? `✦ ${phase}` : phase;
     const done = agents.filter((agent) => agent.status === "done").length;
     const running = agents.filter((agent) => agent.status === "running").length;
     const errors = agents.filter((agent) => agent.status === "error").length;
@@ -161,7 +158,7 @@ export function renderWorkflowLines(snapshot: WorkflowSnapshot, options: Workflo
     const complete = agents.length > 0 && done + errors + skipped === agents.length;
     const marker = running > 0 || (!complete && snapshot.currentPhase === phase) ? "▶" : complete ? "✓" : " ";
     lines.push(
-      `  ${marker} ${phaseLabel} ${done}/${agents.length}${running ? ` · ${running} running` : ""}${errors ? ` · ${errors} errors` : ""}${skipped ? ` · ${skipped} skipped` : ""}`,
+      `  ${marker} ${phase} ${done}/${agents.length}${running ? ` · ${running} running` : ""}${errors ? ` · ${errors} errors` : ""}${skipped ? ` · ${skipped} skipped` : ""}`,
     );
 
     const visibleAgents = agents.slice(-maxAgents);

@@ -78,14 +78,13 @@ test("renderWorkflowLines groups agents by phase even when the phase was not pre
   assert.ok(!lines.some((line) => line.trim() === "Unphased"));
 });
 
-test("renderWorkflowLines marks runtime-created phases", () => {
+test("renderWorkflowLines renders runtime-created phases from the phase list", () => {
   const lines = renderWorkflowLines(
     snapshot({
       phases: ["Inspect API"],
-      dynamicPhases: ["Inspect API"],
       agents: [agent({ label: "inspect api", phase: "Inspect API" })],
     }),
   );
 
-  assert.ok(lines.some((line) => line.includes("✦ Inspect API 1/1")));
+  assert.ok(lines.some((line) => line.includes("Inspect API 1/1")));
 });

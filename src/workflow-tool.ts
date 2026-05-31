@@ -68,7 +68,6 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const script = normalizeWorkflowScript(params.script);
       const parsed = parseWorkflowScript(script);
-      const declaredPhaseTitles = new Set(parsed.meta.phases?.map((phase) => phase.title) ?? []);
       let snapshot: WorkflowSnapshot = createWorkflowSnapshot(parsed.meta);
       const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, {
         key: "workflow",
@@ -86,9 +85,6 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       const recordPhase = (title: string | undefined) => {
         if (!title) return;
         if (!snapshot.phases.includes(title)) snapshot.phases.push(title);
-        if (declaredPhaseTitles.has(title)) return;
-        snapshot.dynamicPhases ??= [];
-        if (!snapshot.dynamicPhases.includes(title)) snapshot.dynamicPhases.push(title);
       };
 
       let result: WorkflowRunResult;
