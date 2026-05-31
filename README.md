@@ -47,7 +47,7 @@ Press `Esc` to cancel a running workflow. Active subagents are aborted and surfa
 
 ## Workflow script shape
 
-A workflow is plain JavaScript. The first statement must export literal metadata:
+A workflow is plain JavaScript. The first statement must export literal metadata. `name` and `description` are required; `phases` is optional metadata for a stable outline, not a complete list of everything that might happen:
 
 ```js
 export const meta = {
@@ -72,6 +72,8 @@ const summary = await agent(
 
 return { inventory, summary }
 ```
+
+Phases are discovered as the script runs, so conditional and loop-created phases work naturally. If a branch is skipped, its phase does not show up as an empty progress row.
 
 ### Available globals
 
