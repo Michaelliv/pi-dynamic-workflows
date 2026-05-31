@@ -103,3 +103,16 @@ test("renderWorkflowText respects log limits", () => {
   assert.doesNotMatch(text, /log: second/);
   assert.match(text, /log: third/);
 });
+
+test("renderWorkflowLines separates logs from progress", () => {
+  const lines = renderWorkflowLines(
+    snapshot({
+      agents: [agent()],
+      logs: ["finished scan"],
+    }),
+  );
+
+  const logIndex = lines.findIndex((line) => line.includes("log: finished scan"));
+  assert.ok(logIndex > 0);
+  assert.equal(lines[logIndex - 1], "");
+});

@@ -180,7 +180,11 @@ export function renderWorkflowLines(snapshot: WorkflowSnapshot, options: Workflo
     }
   }
 
-  for (const log of snapshot.logs.slice(-maxLogs)) lines.push(`  log: ${log}`);
+  const visibleLogs = snapshot.logs.slice(-maxLogs);
+  if (visibleLogs.length) {
+    if (lines.length > 1) lines.push("");
+    for (const log of visibleLogs) lines.push(`  log: ${log}`);
+  }
   return lines;
 }
 
