@@ -56,3 +56,49 @@ return { ok: true }
   assert.deepEqual(result.phases, ["Inspect API", "Inspect UI"]);
   assert.equal(result.agentCount, 2);
 });
+
+test("runWorkflow rejects unawaited nested agent promises before returning details", async () => {
+  let ended = 0;
+
+  await assert.rejects(
+    () =>
+      runWorkflow(
+        `export const meta = {
+  name: 'promise_leak',
+  description: 'Return an unawaited agent promise'
+}
+
+phase('Leak promise')
+const scan = agent('scan', { label: 'scan' })
+return { scan }
+`,
+        {
+          agent: fakeAgent,
+          onAgentEnd() {
+            ended++;
+          },
+        },
+      ),
+    /workflow result must be structured-cloneable; did you forget to await agent\(\), parallel\(\), or pipeline\(\)\?.*Promise.*cloned/,
+  );
+
+  assert.equal(ended, 1);
+});
+
+test("runWorkflow rejects non-string runtime phase titles", async () => {
+  await assert.rejects(
+    () =>
+      runWorkflow(
+        `export const meta = {
+  name: 'bad_phase',
+  description: 'Use a non-string phase title'
+}
+
+phase(Promise.resolve('Scan'))
+return { ok: true }
+`,
+        { agent: fakeAgent },
+      ),
+    /phase title must be a string/,
+  );
+});

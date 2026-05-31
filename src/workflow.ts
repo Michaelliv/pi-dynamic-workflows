@@ -72,6 +72,7 @@ export async function runWorkflow<T = unknown>(
     Math.min(options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2), 16),
   );
   const limiter = createLimiter(concurrency);
+  const pendingAgentRuns = new Set<Promise<unknown>>();
 
   const log = (message: string) => {
     const text = String(message);
@@ -79,10 +80,11 @@ export async function runWorkflow<T = unknown>(
     options.onLog?.(text);
   };
 
-  const phase = (title: string) => {
-    state.currentPhase = title;
-    if (!state.phases.includes(title)) state.phases.push(title);
-    options.onPhase?.(title);
+  const phase = (title: unknown) => {
+    const text = requireString(title, "phase title");
+    state.currentPhase = text;
+    if (!state.phases.includes(text)) state.phases.push(text);
+    options.onPhase?.(text);
   };
 
   const budget = Object.freeze({
@@ -95,22 +97,24 @@ export async function runWorkflow<T = unknown>(
     if (options.signal?.aborted) throw new Error("workflow aborted");
   };
 
-  const agent = async (prompt: string, agentOptions: AgentOptions = {}) => {
+  const agent = async (prompt: unknown, agentOptions: unknown = {}) => {
     throwIfAborted();
     if (budget.total !== null && budget.remaining() <= 0) throw new Error("workflow token budget exhausted");
-    const assignedPhase = agentOptions.phase ?? state.currentPhase;
-    const requestedLabel = agentOptions.label?.trim();
-    return limiter(async () => {
+    const taskPrompt = requireString(prompt, "agent prompt");
+    const normalizedOptions = normalizeAgentOptions(agentOptions);
+    const assignedPhase = normalizedOptions.phase ?? state.currentPhase;
+    const requestedLabel = normalizedOptions.label?.trim();
+    const run = limiter(async () => {
       state.agentCount++;
       const label = requestedLabel || defaultAgentLabel(assignedPhase, state.agentCount);
-      options.onAgentStart?.({ label, phase: assignedPhase, prompt });
+      options.onAgentStart?.({ label, phase: assignedPhase, prompt: taskPrompt });
       try {
         throwIfAborted();
-        const result = await agentRunner.run(prompt, {
+        const result = await agentRunner.run(taskPrompt, {
           label,
-          schema: agentOptions.schema,
+          schema: normalizedOptions.schema,
           signal: options.signal,
-          instructions: buildAgentInstructions(assignedPhase, agentOptions),
+          instructions: buildAgentInstructions(assignedPhase, normalizedOptions),
         } as any);
         throwIfAborted();
         state.spent += estimateTokens(result);
@@ -123,6 +127,12 @@ export async function runWorkflow<T = unknown>(
         return null;
       }
     });
+    pendingAgentRuns.add(run);
+    run.then(
+      () => pendingAgentRuns.delete(run),
+      () => pendingAgentRuns.delete(run),
+    );
+    return run;
   };
 
   const parallel = async (thunks: Array<() => Promise<unknown>>) => {
@@ -202,6 +212,8 @@ export async function runWorkflow<T = unknown>(
 
   const wrapped = `(async () => {\n${body}\n})()`;
   const result = await new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context);
+  await Promise.allSettled([...pendingAgentRuns]);
+  assertStructuredCloneable(result, "workflow result");
   return {
     meta,
     result: result as T,
@@ -332,6 +344,40 @@ function createLimiter(limit: number) {
       next();
     }
   };
+}
+
+function requireString(value: unknown, name: string): string {
+  if (typeof value !== "string") throw new TypeError(`${name} must be a string`);
+  return value;
+}
+
+function optionalString(value: unknown, name: string): string | undefined {
+  if (value === undefined) return undefined;
+  return requireString(value, name);
+}
+
+function normalizeAgentOptions(value: unknown): AgentOptions {
+  if (!value || typeof value !== "object") throw new TypeError("agent options must be an object");
+  const options = value as AgentOptions;
+  return {
+    ...options,
+    label: optionalString(options.label, "agent label"),
+    phase: optionalString(options.phase, "agent phase"),
+    model: optionalString(options.model, "agent model"),
+    isolation: options.isolation,
+    agentType: optionalString(options.agentType, "agent type"),
+  };
+}
+
+function assertStructuredCloneable(value: unknown, name: string): void {
+  try {
+    structuredClone(value);
+  } catch (error) {
+    const detail = error instanceof Error ? ` ${error.message}` : "";
+    throw new Error(
+      `${name} must be structured-cloneable; did you forget to await agent(), parallel(), or pipeline()?${detail}`,
+    );
+  }
 }
 
 function defaultAgentLabel(phase: string | undefined, index: number): string {
