@@ -227,7 +227,7 @@ export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body:
 
   const first = ast.body?.[0] as AnyNode | undefined;
   if (first?.type !== "ExportNamedDeclaration") {
-    throw new Error("`export const meta = { name, description, phases }` must be the first statement in the script");
+    throw new Error("`export const meta = { name, description }` must be the first statement in the script");
   }
 
   const declaration = first.declaration as AnyNode | null;

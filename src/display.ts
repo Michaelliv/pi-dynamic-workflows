@@ -47,7 +47,7 @@ export function createWorkflowSnapshot(meta: WorkflowMeta): WorkflowSnapshot {
   return {
     name: meta.name,
     description: meta.description,
-    phases: meta.phases?.map((phase) => phase.title) ?? [],
+    phases: [],
     logs: [],
     agents: [],
     agentCount: 0,
@@ -104,7 +104,7 @@ export function createToolUpdateWorkflowDisplay(
   const emit = (snapshot: WorkflowSnapshot, completed = false) => {
     if (streamToolUpdates) {
       onUpdate?.({
-        content: [{ type: "text", text: renderWorkflowText(snapshot, completed) }],
+        content: [{ type: "text", text: renderWorkflowText(snapshot, completed, options) }],
         details: snapshot,
       });
     }
@@ -137,13 +137,19 @@ export function renderWorkflowLines(snapshot: WorkflowSnapshot, options: Workflo
         : "";
   const lines = [`◆ Workflow: ${snapshot.name} (${snapshot.doneCount}/${snapshot.agentCount} done${state})`];
 
-  const phaseNames = snapshot.phases.length
-    ? snapshot.phases
-    : unique(snapshot.agents.map((agent) => agent.phase).filter(Boolean) as string[]);
+  const agentPhaseNames = snapshot.agents
+    .map((agent) => agent.phase)
+    .filter((phase): phase is string => Boolean(phase));
+  const phaseNames = unique([
+    ...snapshot.phases,
+    ...(snapshot.currentPhase ? [snapshot.currentPhase] : []),
+    ...agentPhaseNames,
+  ]);
   const rendered = new Set<WorkflowAgentSnapshot>();
 
   for (const phase of phaseNames) {
     const agents = snapshot.agents.filter((agent) => agent.phase === phase);
+    if (agents.length === 0 && snapshot.currentPhase !== phase) continue;
     for (const agent of agents) rendered.add(agent);
     const done = agents.filter((agent) => agent.status === "done").length;
     const running = agents.filter((agent) => agent.status === "running").length;
@@ -174,13 +180,21 @@ export function renderWorkflowLines(snapshot: WorkflowSnapshot, options: Workflo
     }
   }
 
-  for (const log of snapshot.logs.slice(-maxLogs)) lines.push(`  log: ${log}`);
+  const visibleLogs = snapshot.logs.slice(-maxLogs);
+  if (visibleLogs.length) {
+    if (lines.length > 1) lines.push("");
+    for (const log of visibleLogs) lines.push(`  log: ${log}`);
+  }
   return lines;
 }
 
-export function renderWorkflowText(snapshot: WorkflowSnapshot, completed = false): string {
+export function renderWorkflowText(
+  snapshot: WorkflowSnapshot,
+  completed = false,
+  options: WorkflowDisplayOptions = {},
+): string {
   const header = completed ? "Workflow completed" : "Workflow running";
-  return [header, ...renderWorkflowLines(snapshot)].join("\n");
+  return [header, ...renderWorkflowLines(snapshot, options)].join("\n");
 }
 
 function statusLine(snapshot: WorkflowSnapshot, completed: boolean): string {
