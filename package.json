@@ -1,6 +1,6 @@
 {
   "name": "pi-dynamic-workflows",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Claude-Code-style dynamic workflow orchestration for Pi.",
   "type": "module",
   "main": "./dist/index.js",
