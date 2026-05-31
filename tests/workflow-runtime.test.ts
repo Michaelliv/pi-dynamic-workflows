@@ -102,3 +102,23 @@ return { ok: true }
     /phase title must be a string/,
   );
 });
+
+test("runWorkflow allows prompts that mention nondeterministic API names", async () => {
+  const result = await runWorkflow(
+    `export const meta = {
+  name: 'prompt_mentions',
+  description: 'Ask about Date.now(), Math.random(), and new Date() usage'
+}
+
+phase('Catalog mentions')
+const scan = await agent('Catalog Date.now(), Math.random(), and new Date() usage', { label: 'scan' })
+return { scan }
+`,
+    { agent: fakeAgent },
+  );
+
+  assert.equal(
+    (result.result as { scan: string }).scan,
+    "result:Catalog Date.now(), Math.random(), and new Date() usage",
+  );
+});

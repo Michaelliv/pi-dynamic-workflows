@@ -57,7 +57,8 @@ interface RuntimeState {
 
 type AnyNode = Node & { [key: string]: any; start: number; end: number };
 
-const DETERMINISM_BLOCKLIST = /\bDate\s*\.\s*now\b|\bMath\s*\.\s*random\b|\bnew\s+Date\s*\(\s*\)/;
+const NONDETERMINISM_ERROR =
+  "Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable";
 
 export async function runWorkflow<T = unknown>(
   script: string,
@@ -225,10 +226,6 @@ export async function runWorkflow<T = unknown>(
 }
 
 export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body: string } {
-  if (DETERMINISM_BLOCKLIST.test(script)) {
-    throw new Error("Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable");
-  }
-
   const ast = parse(script, {
     ecmaVersion: "latest",
     sourceType: "module",
@@ -236,6 +233,8 @@ export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body:
     allowReturnOutsideFunction: true,
     ranges: false,
   }) as AnyNode;
+
+  assertDeterministicAst(ast);
 
   const first = ast.body?.[0] as AnyNode | undefined;
   if (first?.type !== "ExportNamedDeclaration") {
@@ -308,6 +307,64 @@ function propertyKey(node: AnyNode, path: string): string {
   if (node.type === "Literal" && (typeof node.value === "string" || typeof node.value === "number"))
     return String(node.value);
   throw new Error(`unsupported key type in ${path}: ${node.type}`);
+}
+
+function assertDeterministicAst(node: AnyNode): void {
+  if (isDateNowCall(node) || isMathRandomCall(node) || isNewDateExpression(node)) {
+    throw new Error(NONDETERMINISM_ERROR);
+  }
+
+  for (const child of astChildren(node)) assertDeterministicAst(child);
+}
+
+function astChildren(node: AnyNode): AnyNode[] {
+  const children: AnyNode[] = [];
+  for (const value of Object.values(node)) {
+    if (Array.isArray(value)) children.push(...value.filter(isAstNode));
+    else if (isAstNode(value)) children.push(value);
+  }
+  return children;
+}
+
+function isAstNode(value: unknown): value is AnyNode {
+  return !!value && typeof value === "object" && typeof (value as AnyNode).type === "string";
+}
+
+function isDateNowCall(node: AnyNode): boolean {
+  return node.type === "CallExpression" && isMemberExpression(node.callee, "Date", "now");
+}
+
+function isMathRandomCall(node: AnyNode): boolean {
+  return node.type === "CallExpression" && isMemberExpression(node.callee, "Math", "random");
+}
+
+function isNewDateExpression(node: AnyNode): boolean {
+  return node.type === "NewExpression" && node.callee?.type === "Identifier" && node.callee.name === "Date";
+}
+
+function isMemberExpression(node: AnyNode | undefined, objectName: string, propertyName: string): boolean {
+  if (node?.type !== "MemberExpression" || node.object?.type !== "Identifier" || node.object.name !== objectName) {
+    return false;
+  }
+  return propertyNameOf(node) === propertyName;
+}
+
+function propertyNameOf(node: AnyNode): string | undefined {
+  if (!node.computed && node.property?.type === "Identifier") return node.property.name;
+  return staticStringOf(node.property);
+}
+
+function staticStringOf(node: AnyNode | undefined): string | undefined {
+  if (node?.type === "Literal" && typeof node.value === "string") return node.value;
+  if (node?.type === "TemplateLiteral" && node.expressions.length === 0) {
+    return node.quasis.map((quasi: AnyNode) => quasi.value.cooked ?? quasi.value.raw).join("");
+  }
+  if (node?.type === "BinaryExpression" && node.operator === "+") {
+    const left = staticStringOf(node.left);
+    const right = staticStringOf(node.right);
+    if (left !== undefined && right !== undefined) return left + right;
+  }
+  return undefined;
 }
 
 function validateMeta(meta: unknown): asserts meta is WorkflowMeta {
