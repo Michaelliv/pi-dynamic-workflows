@@ -15,7 +15,7 @@ const workflowToolSchema = Type.Object({
   script: Type.String({
     description: [
       "Required raw JavaScript workflow script, with no Markdown fences.",
-      "First statement: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. Add phases only when a stable upfront outline helps.",
+      "First statement: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. meta.phases is optional documentation; live progress is driven by phase(title).",
       "Use phase('Name'), agent(prompt, opts), parallel(arrayOfFunctions), pipeline(items, ...stages), log(message), args, and budget. The workflow must call agent() at least once.",
       "parallel() requires functions, not promises: await parallel(items.map(item => () => agent(...))).",
     ].join(" "),
@@ -52,7 +52,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "script is required raw JavaScript. It must start with export const meta = { name, description } and must call agent() at least once; phases are optional metadata.",
     ].join(" "),
     promptSnippet:
-      "Run a deterministic JavaScript workflow. Required script header: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. Add phases only when they help explain the planned shape.",
+      "Run a deterministic JavaScript workflow. Required script header: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. Use phase(title) at runtime to create progress groups.",
     promptGuidelines: [
       "Use workflow only when the user explicitly asks for a workflow, workflows, fan-out, or multi-agent orchestration.",
       "For workflow, always pass one raw JavaScript string in the required script parameter; do not include Markdown fences or prose around the script.",
