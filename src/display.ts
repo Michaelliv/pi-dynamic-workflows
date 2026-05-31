@@ -104,7 +104,7 @@ export function createToolUpdateWorkflowDisplay(
   const emit = (snapshot: WorkflowSnapshot, completed = false) => {
     if (streamToolUpdates) {
       onUpdate?.({
-        content: [{ type: "text", text: renderWorkflowText(snapshot, completed) }],
+        content: [{ type: "text", text: renderWorkflowText(snapshot, completed, options) }],
         details: snapshot,
       });
     }
@@ -184,9 +184,13 @@ export function renderWorkflowLines(snapshot: WorkflowSnapshot, options: Workflo
   return lines;
 }
 
-export function renderWorkflowText(snapshot: WorkflowSnapshot, completed = false): string {
+export function renderWorkflowText(
+  snapshot: WorkflowSnapshot,
+  completed = false,
+  options: WorkflowDisplayOptions = {},
+): string {
   const header = completed ? "Workflow completed" : "Workflow running";
-  return [header, ...renderWorkflowLines(snapshot)].join("\n");
+  return [header, ...renderWorkflowLines(snapshot, options)].join("\n");
 }
 
 function statusLine(snapshot: WorkflowSnapshot, completed: boolean): string {

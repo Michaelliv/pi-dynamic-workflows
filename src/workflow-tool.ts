@@ -69,13 +69,14 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       const script = normalizeWorkflowScript(params.script);
       const parsed = parseWorkflowScript(script);
       let snapshot: WorkflowSnapshot = createWorkflowSnapshot(parsed.meta);
-      const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, {
+      const displayOptions = {
         key: "workflow",
         streamToolUpdates: true,
         maxAgents: 4,
         maxLogs: 1,
         showResultPreviews: false,
-      });
+      };
+      const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, displayOptions);
 
       const update = () => {
         snapshot = recomputeWorkflowSnapshot(snapshot);
@@ -179,7 +180,11 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
     renderResult(result, { isPartial }, theme) {
       const snapshot = result.details as WorkflowSnapshot | undefined;
       if (snapshot?.name) {
-        return new Text(renderWorkflowText(snapshot, !isPartial), 0, 0);
+        return new Text(
+          renderWorkflowText(snapshot, !isPartial, { maxAgents: 4, maxLogs: 1, showResultPreviews: false }),
+          0,
+          0,
+        );
       }
       const text = result.content?.[0];
       return new Text(text?.type === "text" ? text.text : theme.fg("muted", "workflow"), 0, 0);

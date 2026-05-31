@@ -4,6 +4,7 @@ import {
   createWorkflowSnapshot,
   recomputeWorkflowSnapshot,
   renderWorkflowLines,
+  renderWorkflowText,
   type WorkflowAgentSnapshot,
   type WorkflowSnapshot,
 } from "../src/display.js";
@@ -87,4 +88,18 @@ test("renderWorkflowLines renders runtime-created phases from the phase list", (
   );
 
   assert.ok(lines.some((line) => line.includes("Inspect API 1/1")));
+});
+
+test("renderWorkflowText respects log limits", () => {
+  const text = renderWorkflowText(
+    snapshot({
+      logs: ["first", "second", "third"],
+    }),
+    true,
+    { maxLogs: 1 },
+  );
+
+  assert.doesNotMatch(text, /log: first/);
+  assert.doesNotMatch(text, /log: second/);
+  assert.match(text, /log: third/);
 });
