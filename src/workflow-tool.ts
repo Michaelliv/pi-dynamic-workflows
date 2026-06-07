@@ -1,8 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import type { WorkflowAgentTranscript } from "./agent.js";
 import {
   createToolUpdateWorkflowDisplay,
   createWorkflowSnapshot,
@@ -11,7 +12,7 @@ import {
   renderWorkflowText,
   type WorkflowSnapshot,
 } from "./display.js";
-import { parseWorkflowScript, runWorkflow, type WorkflowRunResult } from "./workflow.js";
+import { parseWorkflowScript, runWorkflow, type WorkflowMeta, type WorkflowRunResult } from "./workflow.js";
 
 const workflowToolSchema = Type.Object({
   script: Type.Optional(
@@ -33,12 +34,19 @@ const workflowToolSchema = Type.Object({
   args: Type.Optional(
     Type.Any({ description: "Optional JSON value exposed to the workflow script as global `args`." }),
   ),
+  transcriptDir: Type.Optional(
+    Type.String({
+      description:
+        "Optional override for persisted subagent transcripts. By default, transcripts are written to args.outputDir/transcripts when args.outputDir is present, otherwise to .pi/workflow-transcripts/<workflow-name> under the current working directory.",
+    }),
+  ),
 });
 
 export type WorkflowToolInput = {
   script?: string;
   scriptPath?: string;
   args?: unknown;
+  transcriptDir?: string;
 };
 
 const workflowDisplayOptions = {
@@ -61,6 +69,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
     description: [
       "Execute a deterministic JavaScript workflow that orchestrates multiple subagents with agent(), parallel(), and pipeline().",
       "Provide exactly one of script (raw JavaScript) or scriptPath (path to a workflow file). The script must start with export const meta = { name, description } and must call agent() at least once; phases are optional metadata.",
+      "Subagent transcripts are persisted by default and a manifest is returned in the tool result details.",
     ].join(" "),
     promptSnippet:
       "Run a deterministic JavaScript workflow. Required script header: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. Use phase(title) at runtime to create progress groups.",
@@ -74,7 +83,8 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, prefer it for decomposable work: repository inspection, independent research/checks, multi-perspective review, or fan-out/fan-in synthesis. Do not use it for a single quick file read/edit or when ordinary tools are enough.",
       "For workflow, parallel() takes functions, not promises: use `await parallel(items.map(item => () => agent('...', { label: '...' })))`, never `await parallel(items.map(item => agent(...)))`. Results are returned in input order.",
       "For workflow, pipeline(items, ...stages) runs each item through stages sequentially, while different items may run concurrently. Each stage receives (previousValue, originalItem, index).",
-      "For workflow, every agent() call should include a unique short label option, 2-5 words, such as { label: 'repo inventory' } or { label: 'source modules' }; unique labels make live status and error reporting readable.",
+      "For workflow, every agent() call should include a unique short label option, 2-5 words, such as { label: 'repo inventory' } or { label: 'source modules' }; unique labels make live status, transcript manifests, and error reporting readable.",
+      "For workflow, subagent transcripts are persisted by default. If args.outputDir is provided, transcripts are saved under args.outputDir/transcripts; otherwise they are saved under .pi/workflow-transcripts/<workflow-name> in the current working directory.",
       "For workflow, failed agent(), parallel(), or pipeline() branches return null and log the failure unless the workflow is aborted. Check for nulls before synthesizing conclusions.",
       "For workflow, include a final synthesis/assertion agent when combining multiple subagent results; return a compact JSON-serializable value with ok/verdict plus the important outputs.",
       "For workflow, if agent() needs machine-readable output, pass a plain JSON Schema via opts.schema; agent() will return the validated object. Use JSON Schema syntax, not TypeScript or TypeBox constructors.",
@@ -88,6 +98,9 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       const cwd = options.cwd ?? ctx.cwd;
       const script = await loadWorkflowScript(params, cwd);
       const parsed = parseWorkflowScript(script);
+      const transcriptDir = resolveWorkflowTranscriptDir(params, cwd, parsed.meta);
+      const transcripts: WorkflowAgentTranscript[] = [];
+      let transcriptManifestPath: string | undefined;
       let snapshot: WorkflowSnapshot = createWorkflowSnapshot(parsed.meta);
       const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, workflowDisplayOptions);
 
@@ -101,16 +114,20 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         if (!snapshot.phases.includes(title)) snapshot.phases.push(title);
       };
 
-      let result: WorkflowRunResult;
+      let result: WorkflowRunResult | undefined;
       try {
         result = await runWorkflow(script, {
           cwd,
           args: params.args,
           signal,
           concurrency: options.concurrency,
+          transcriptDir,
           session: {
             modelRegistry: ctx.modelRegistry,
             model: ctx.model,
+          },
+          onTranscript(info) {
+            transcripts.push(info);
           },
           onLog(message) {
             snapshot.logs.push(message);
@@ -145,6 +162,10 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           },
         });
       } catch (error) {
+        transcriptManifestPath = await writeWorkflowTranscriptManifest(transcriptDir, parsed.meta, transcripts, {
+          status: signal?.aborted || isAbortError(error) ? "aborted" : "error",
+          error: error instanceof Error ? error.message : String(error),
+        });
         if (signal?.aborted || isAbortError(error)) {
           for (const agent of snapshot.agents) {
             if (agent.status === "running") {
@@ -165,6 +186,10 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         );
       }
 
+      transcriptManifestPath = await writeWorkflowTranscriptManifest(transcriptDir, parsed.meta, transcripts, {
+        status: "success",
+      });
+
       snapshot.result = result.result;
       snapshot.durationMs = result.durationMs;
       snapshot = recomputeWorkflowSnapshot(snapshot);
@@ -174,7 +199,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         content: [
           {
             type: "text",
-            text: `Workflow ${result.meta.name} completed with ${result.agentCount} agent(s).\n\nResult:\n${JSON.stringify(result.result, null, 2)}`,
+            text: `Workflow ${result.meta.name} completed with ${result.agentCount} agent(s).\n\nTranscripts:\n${transcriptManifestPath}\n\nResult:\n${JSON.stringify(result.result, null, 2)}`,
           },
         ],
         details: {
@@ -184,6 +209,9 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           logs: result.logs,
           result: result.result,
           durationMs: result.durationMs,
+          transcriptDir,
+          transcriptManifestPath,
+          transcripts,
         },
       };
     },
@@ -215,9 +243,22 @@ function normalizeWorkflowToolArgs(args: unknown): WorkflowToolInput {
   if (hasScriptPath && typeof value.scriptPath !== "string") {
     throw new Error("workflow `scriptPath` must be a string");
   }
+  if (value.transcriptDir !== undefined && typeof value.transcriptDir !== "string") {
+    throw new Error("workflow `transcriptDir` must be a string");
+  }
 
-  if (hasScript) return { ...value, script: normalizeWorkflowScript(value.script as string) } as WorkflowToolInput;
-  return { ...value, scriptPath: (value.scriptPath as string).trim() } as WorkflowToolInput;
+  if (hasScript) {
+    return {
+      ...value,
+      script: normalizeWorkflowScript(value.script as string),
+      transcriptDir: typeof value.transcriptDir === "string" ? value.transcriptDir.trim() : undefined,
+    } as WorkflowToolInput;
+  }
+  return {
+    ...value,
+    scriptPath: (value.scriptPath as string).trim(),
+    transcriptDir: typeof value.transcriptDir === "string" ? value.transcriptDir.trim() : undefined,
+  } as WorkflowToolInput;
 }
 
 async function loadWorkflowScript(params: WorkflowToolInput, cwd: string): Promise<string> {
@@ -234,6 +275,64 @@ async function loadWorkflowScript(params: WorkflowToolInput, cwd: string): Promi
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Failed to read workflow scriptPath ${workflowPath}: ${message}`);
   }
+}
+
+export function resolveWorkflowTranscriptDir(params: WorkflowToolInput, cwd: string, meta: WorkflowMeta): string {
+  if (params.transcriptDir) {
+    return path.isAbsolute(params.transcriptDir) ? params.transcriptDir : path.resolve(cwd, params.transcriptDir);
+  }
+
+  const outputDir = getOutputDirArg(params.args);
+  if (outputDir) {
+    const resolvedOutputDir = path.isAbsolute(outputDir) ? outputDir : path.resolve(cwd, outputDir);
+    return path.join(resolvedOutputDir, "transcripts");
+  }
+
+  return path.join(cwd, ".pi", "workflow-transcripts", safePathSegment(meta.name));
+}
+
+async function writeWorkflowTranscriptManifest(
+  transcriptDir: string,
+  meta: WorkflowMeta,
+  transcripts: WorkflowAgentTranscript[],
+  outcome: { status: "success" | "error" | "aborted"; error?: string },
+): Promise<string> {
+  await mkdir(transcriptDir, { recursive: true });
+  const manifestPath = path.join(transcriptDir, "manifest.json");
+  await writeFile(
+    manifestPath,
+    `${JSON.stringify(
+      {
+        workflow: {
+          name: meta.name,
+          description: meta.description,
+        },
+        transcriptDir,
+        createdAt: new Date().toISOString(),
+        outcome,
+        transcripts,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  return manifestPath;
+}
+
+function getOutputDirArg(args: unknown): string | undefined {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const outputDir = (args as Record<string, unknown>).outputDir;
+  return typeof outputDir === "string" && outputDir.trim() ? outputDir.trim() : undefined;
+}
+
+function safePathSegment(value: string): string {
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "workflow"
+  );
 }
 
 function normalizeWorkflowScript(script: string): string {

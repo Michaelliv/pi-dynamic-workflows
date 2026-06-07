@@ -2,7 +2,13 @@ import vm from "node:vm";
 import type { Node } from "acorn";
 import { parse } from "acorn";
 import type { TSchema } from "typebox";
-import { type AgentRunOptions, type AgentThinkingLevel, WorkflowAgent, type WorkflowAgentOptions } from "./agent.js";
+import {
+  type AgentRunOptions,
+  type AgentThinkingLevel,
+  WorkflowAgent,
+  type WorkflowAgentOptions,
+  type WorkflowAgentTranscript,
+} from "./agent.js";
 
 export interface WorkflowMetaPhase {
   title: string;
@@ -27,6 +33,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   onPhase?: (title: string) => void;
   onAgentStart?: (event: { label: string; phase?: string; prompt: string }) => void;
   onAgentEnd?: (event: { label: string; phase?: string; result: unknown }) => void;
+  onTranscript?: (info: WorkflowAgentTranscript) => void;
 }
 
 export type WorkflowAgentRunner = Pick<WorkflowAgent, "run"> & Partial<Pick<WorkflowAgent, "validateRunOptions">>;
@@ -38,6 +45,8 @@ export interface WorkflowRunResult<T = unknown> {
   phases: string[];
   agentCount: number;
   durationMs: number;
+  transcriptDir?: string;
+  transcripts: WorkflowAgentTranscript[];
 }
 
 export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined> {
@@ -70,7 +79,12 @@ export async function runWorkflow<T = unknown>(
   const started = Date.now();
   const { meta, body } = parseWorkflowScript(script);
   const state: RuntimeState = { logs: [], phases: [], agentCount: 0, spent: 0 };
-  const agentRunner = options.agent ?? new WorkflowAgent(options);
+  const transcripts: WorkflowAgentTranscript[] = [];
+  const recordTranscript = (info: WorkflowAgentTranscript) => {
+    transcripts.push(info);
+    options.onTranscript?.(info);
+  };
+  const agentRunner = options.agent ?? new WorkflowAgent({ ...options, onTranscript: recordTranscript });
   validateStaticAgentOptions(script, agentRunner);
   const concurrency = Math.max(
     1,
@@ -114,6 +128,7 @@ export async function runWorkflow<T = unknown>(
       model: normalizedOptions.model,
       thinkingLevel: normalizedOptions.thinkingLevel,
       signal: options.signal,
+      phase: assignedPhase,
       instructions: buildAgentInstructions(assignedPhase, normalizedOptions),
     } as AgentRunOptions<any>;
     agentRunner.validateRunOptions?.(runOptions);
@@ -232,6 +247,8 @@ export async function runWorkflow<T = unknown>(
     phases: state.phases,
     agentCount: state.agentCount,
     durationMs: Date.now() - started,
+    transcriptDir: options.transcriptDir,
+    transcripts,
   };
 }
 

@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createWorkflowTool } from "../src/workflow-tool.js";
+import { createWorkflowTool, resolveWorkflowTranscriptDir } from "../src/workflow-tool.js";
 
 test("createWorkflowTool describes phases as optional and dynamic", () => {
   const tool = createWorkflowTool();
@@ -44,4 +44,33 @@ test("createWorkflowTool rejects missing or ambiguous workflow script inputs", (
     /exactly one of `script` or `scriptPath`/,
   );
   assert.throws(() => tool.prepareArguments?.({ scriptPath: 42 }), /workflow `scriptPath` must be a string/);
+  assert.throws(
+    () => tool.prepareArguments?.({ script: "export const meta = {}", transcriptDir: 42 }),
+    /workflow `transcriptDir` must be a string/,
+  );
+});
+
+test("resolveWorkflowTranscriptDir defaults to args.outputDir transcripts", () => {
+  assert.equal(
+    resolveWorkflowTranscriptDir({ script: "", args: { outputDir: "/tmp/review-output/run-1" } }, "/repo", {
+      name: "content_review",
+      description: "Review content",
+    }),
+    "/tmp/review-output/run-1/transcripts",
+  );
+});
+
+test("resolveWorkflowTranscriptDir supports overrides and generic workflow defaults", () => {
+  assert.equal(
+    resolveWorkflowTranscriptDir({ script: "", transcriptDir: "custom-transcripts" }, "/repo", {
+      name: "Content Review!",
+      description: "Review content",
+    }),
+    "/repo/custom-transcripts",
+  );
+
+  assert.equal(
+    resolveWorkflowTranscriptDir({ script: "" }, "/repo", { name: "Content Review!", description: "Review content" }),
+    "/repo/.pi/workflow-transcripts/content-review",
+  );
 });

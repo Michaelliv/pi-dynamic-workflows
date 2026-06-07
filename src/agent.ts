@@ -16,6 +16,20 @@ import { createStructuredOutputTool, type StructuredOutputCapture } from "./stru
 
 export type AgentThinkingLevel = NonNullable<CreateAgentSessionOptions["thinkingLevel"]>;
 
+export type WorkflowAgentTranscriptStatus = "done" | "error";
+
+export interface WorkflowAgentTranscript {
+  label?: string;
+  phase?: string;
+  status: WorkflowAgentTranscriptStatus;
+  transcriptPath?: string;
+  sessionId?: string;
+  requestedModel?: string;
+  resolvedModel?: string;
+  thinkingLevel?: AgentThinkingLevel;
+  error?: string;
+}
+
 export interface WorkflowAgentOptions {
   cwd?: string;
   /** Extra tools available to the subagent in addition to the structured output tool. */
@@ -24,10 +38,15 @@ export interface WorkflowAgentOptions {
   session?: Partial<CreateAgentSessionOptions>;
   /** Extra system guidance prepended to every subagent task. */
   instructions?: string;
+  /** Directory where each subagent Pi session transcript is persisted. Defaults to Pi's normal session directory. */
+  transcriptDir?: string;
+  /** Called after each subagent finishes, with the persisted transcript path and audit metadata. */
+  onTranscript?: (info: WorkflowAgentTranscript) => void;
 }
 
 export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefined> {
   label?: string;
+  phase?: string;
   schema?: TSchemaDef;
   model?: string | Model<any>;
   thinkingLevel?: AgentThinkingLevel;
@@ -45,12 +64,16 @@ export class WorkflowAgent {
   private readonly baseTools: ToolDefinition[];
   private readonly sessionOptions: Partial<CreateAgentSessionOptions>;
   private readonly instructions?: string;
+  private readonly transcriptDir?: string;
+  private readonly onTranscript?: (info: WorkflowAgentTranscript) => void;
 
   constructor(options: WorkflowAgentOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
     this.baseTools = options.tools ?? createCodingTools(this.cwd);
     this.sessionOptions = options.session ?? {};
     this.instructions = options.instructions;
+    this.transcriptDir = options.transcriptDir;
+    this.onTranscript = options.onTranscript;
   }
 
   async run<TSchemaDef extends TSchema | undefined = undefined>(
@@ -66,17 +89,23 @@ export class WorkflowAgent {
 
     const agentDir = getAgentDir();
     const runSessionOptions = this.resolveRunSessionOptions(options, agentDir);
+    const sessionManager = this.createSessionManager();
     const { session } = await createAgentSession({
       cwd: this.cwd,
       agentDir,
-      sessionManager: SessionManager.inMemory(this.cwd),
+      sessionManager,
       settingsManager: SettingsManager.create(this.cwd, agentDir),
       customTools,
       ...this.sessionOptions,
       ...runSessionOptions,
     });
+    session.sessionManager.appendSessionInfo(
+      options.label ? `workflow subagent: ${options.label}` : "workflow subagent",
+    );
 
     let removeAbortListener: (() => void) | undefined;
+    let status: WorkflowAgentTranscriptStatus = "done";
+    let errorMessage: string | undefined;
     try {
       if (options.signal?.aborted) throw new Error("Subagent was aborted");
       if (options.signal) {
@@ -96,14 +125,35 @@ export class WorkflowAgent {
       }
 
       return this.lastAssistantText(session.messages) as AgentRunResult<TSchemaDef>;
+    } catch (error) {
+      status = "error";
+      errorMessage = error instanceof Error ? error.message : String(error);
+      throw error;
     } finally {
       removeAbortListener?.();
+      const transcript: WorkflowAgentTranscript = {
+        label: options.label,
+        phase: options.phase,
+        status,
+        transcriptPath: session.sessionFile,
+        sessionId: session.sessionId,
+        requestedModel: formatModelRef(options.model),
+        resolvedModel: formatModelRef(session.model ?? runSessionOptions.model),
+        thinkingLevel: options.thinkingLevel ?? session.thinkingLevel,
+        error: errorMessage,
+      };
       session.dispose();
+      this.onTranscript?.(transcript);
     }
   }
 
   validateRunOptions(options: AgentRunOptions<any>): void {
     this.resolveRunSessionOptions(options, getAgentDir());
+  }
+
+  private createSessionManager(): SessionManager {
+    if (this.sessionOptions.sessionManager) return this.sessionOptions.sessionManager;
+    return SessionManager.create(this.cwd, this.transcriptDir);
   }
 
   private buildPrompt(prompt: string, options: AgentRunOptions<any>, structured: boolean): string {
@@ -175,6 +225,12 @@ export class WorkflowAgent {
     }
     return "";
   }
+}
+
+function formatModelRef(model: string | Model<any> | undefined): string | undefined {
+  if (!model) return undefined;
+  if (typeof model === "string") return model;
+  return `${model.provider}/${model.id}`;
 }
 
 export function resolveModel(
