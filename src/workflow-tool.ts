@@ -16,7 +16,7 @@ const workflowToolSchema = Type.Object({
     description: [
       "Required raw JavaScript workflow script, with no Markdown fences.",
       "First statement: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. meta.phases is optional documentation; live progress is driven by phase(title).",
-      "Use phase('Name'), agent(prompt, opts), parallel(arrayOfFunctions), pipeline(items, ...stages), log(message), args, and budget. The workflow must call agent() at least once.",
+      "Use phase('Name'), agent(prompt, opts), parallel(arrayOfFunctions), pipeline(items, ...stages), log(message), args, and budget. agent opts include label, schema, phase, model, and thinkingLevel. The workflow must call agent() at least once.",
       "parallel() requires functions, not promises: await parallel(items.map(item => () => agent(...))).",
     ].join(" "),
   }),

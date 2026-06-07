@@ -2,7 +2,7 @@ import vm from "node:vm";
 import type { Node } from "acorn";
 import { parse } from "acorn";
 import type { TSchema } from "typebox";
-import { WorkflowAgent, type WorkflowAgentOptions } from "./agent.js";
+import { type AgentRunOptions, type AgentThinkingLevel, WorkflowAgent, type WorkflowAgentOptions } from "./agent.js";
 
 export interface WorkflowMetaPhase {
   title: string;
@@ -19,7 +19,7 @@ export interface WorkflowMeta {
 
 export interface WorkflowRunOptions extends WorkflowAgentOptions {
   args?: unknown;
-  agent?: Pick<WorkflowAgent, "run">;
+  agent?: WorkflowAgentRunner;
   concurrency?: number;
   tokenBudget?: number | null;
   signal?: AbortSignal;
@@ -28,6 +28,8 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   onAgentStart?: (event: { label: string; phase?: string; prompt: string }) => void;
   onAgentEnd?: (event: { label: string; phase?: string; result: unknown }) => void;
 }
+
+export type WorkflowAgentRunner = Pick<WorkflowAgent, "run"> & Partial<Pick<WorkflowAgent, "validateRunOptions">>;
 
 export interface WorkflowRunResult<T = unknown> {
   meta: WorkflowMeta;
@@ -43,6 +45,7 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
   phase?: string;
   schema?: TSchemaDef;
   model?: string;
+  thinkingLevel?: AgentThinkingLevel;
   isolation?: "worktree";
   agentType?: string;
 }
@@ -68,6 +71,7 @@ export async function runWorkflow<T = unknown>(
   const { meta, body } = parseWorkflowScript(script);
   const state: RuntimeState = { logs: [], phases: [], agentCount: 0, spent: 0 };
   const agentRunner = options.agent ?? new WorkflowAgent(options);
+  validateStaticAgentOptions(script, agentRunner);
   const concurrency = Math.max(
     1,
     Math.min(options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2), 16),
@@ -105,6 +109,14 @@ export async function runWorkflow<T = unknown>(
     const normalizedOptions = normalizeAgentOptions(agentOptions);
     const assignedPhase = normalizedOptions.phase ?? state.currentPhase;
     const requestedLabel = normalizedOptions.label?.trim();
+    const runOptions = {
+      schema: normalizedOptions.schema,
+      model: normalizedOptions.model,
+      thinkingLevel: normalizedOptions.thinkingLevel,
+      signal: options.signal,
+      instructions: buildAgentInstructions(assignedPhase, normalizedOptions),
+    } as AgentRunOptions<any>;
+    agentRunner.validateRunOptions?.(runOptions);
     const run = limiter(async () => {
       state.agentCount++;
       const label = requestedLabel || defaultAgentLabel(assignedPhase, state.agentCount);
@@ -112,11 +124,9 @@ export async function runWorkflow<T = unknown>(
       try {
         throwIfAborted();
         const result = await agentRunner.run(taskPrompt, {
+          ...runOptions,
           label,
-          schema: normalizedOptions.schema,
-          signal: options.signal,
-          instructions: buildAgentInstructions(assignedPhase, normalizedOptions),
-        } as any);
+        });
         throwIfAborted();
         state.spent += estimateTokens(result);
         options.onAgentEnd?.({ label, phase: assignedPhase, result });
@@ -367,6 +377,51 @@ function staticStringOf(node: AnyNode | undefined): string | undefined {
   return undefined;
 }
 
+function validateStaticAgentOptions(script: string, agentRunner: WorkflowAgentRunner): void {
+  if (!agentRunner.validateRunOptions) return;
+
+  const ast = parse(script, {
+    ecmaVersion: "latest",
+    sourceType: "module",
+    allowAwaitOutsideFunction: true,
+    allowReturnOutsideFunction: true,
+    ranges: false,
+  }) as AnyNode;
+
+  for (const node of walkAst(ast)) {
+    if (node.type !== "CallExpression" || node.callee?.type !== "Identifier" || node.callee.name !== "agent") {
+      continue;
+    }
+
+    const literalOptions = staticAgentRunOptions(node.arguments?.[1] as AnyNode | undefined);
+    if (literalOptions) agentRunner.validateRunOptions(literalOptions);
+  }
+}
+
+function staticAgentRunOptions(node: AnyNode | undefined): AgentRunOptions<any> | undefined {
+  if (node?.type !== "ObjectExpression") return undefined;
+
+  const options: AgentRunOptions<any> = {};
+  for (const prop of node.properties as AnyNode[]) {
+    if (prop.type !== "Property" || prop.computed || prop.kind !== "init" || prop.method) continue;
+    const key = propertyKey(prop.key as AnyNode, "agent options");
+    if (key === "model") {
+      const model = staticStringOf(prop.value as AnyNode);
+      if (model !== undefined) options.model = model;
+    }
+    if (key === "thinkingLevel") {
+      const thinkingLevel = staticStringOf(prop.value as AnyNode);
+      if (thinkingLevel !== undefined) options.thinkingLevel = requireThinkingLevel(thinkingLevel);
+    }
+  }
+
+  return options.model || options.thinkingLevel ? options : undefined;
+}
+
+function walkAst(node: AnyNode): AnyNode[] {
+  return [node, ...astChildren(node).flatMap(walkAst)];
+}
+
 function validateMeta(meta: unknown): asserts meta is WorkflowMeta {
   if (!meta || typeof meta !== "object") throw new Error("meta must be an object");
   const value = meta as WorkflowMeta;
@@ -413,6 +468,17 @@ function optionalString(value: unknown, name: string): string | undefined {
   return requireString(value, name);
 }
 
+function optionalThinkingLevel(value: unknown): AgentThinkingLevel | undefined {
+  if (value === undefined) return undefined;
+  const text = requireString(value, "agent thinkingLevel");
+  return requireThinkingLevel(text);
+}
+
+function requireThinkingLevel(value: string): AgentThinkingLevel {
+  if (isThinkingLevel(value)) return value;
+  throw new TypeError("agent thinkingLevel must be one of: off, minimal, low, medium, high, xhigh");
+}
+
 function normalizeAgentOptions(value: unknown): AgentOptions {
   if (!value || typeof value !== "object") throw new TypeError("agent options must be an object");
   const options = value as AgentOptions;
@@ -421,9 +487,14 @@ function normalizeAgentOptions(value: unknown): AgentOptions {
     label: optionalString(options.label, "agent label"),
     phase: optionalString(options.phase, "agent phase"),
     model: optionalString(options.model, "agent model"),
+    thinkingLevel: optionalThinkingLevel(options.thinkingLevel),
     isolation: options.isolation,
     agentType: optionalString(options.agentType, "agent type"),
   };
+}
+
+function isThinkingLevel(value: string): value is AgentThinkingLevel {
+  return ["off", "minimal", "low", "medium", "high", "xhigh"].includes(value);
 }
 
 function assertStructuredCloneable(value: unknown, name: string): void {
@@ -446,7 +517,6 @@ function buildAgentInstructions(phase: string | undefined, options: AgentOptions
   if (phase) lines.push(`Workflow phase: ${phase}`);
   if (options.agentType) lines.push(`Act as workflow subagent type: ${options.agentType}`);
   if (options.isolation) lines.push(`Requested isolation: ${options.isolation}`);
-  if (options.model) lines.push(`Requested model: ${options.model}`);
   return lines.length ? lines.join("\n") : undefined;
 }
 

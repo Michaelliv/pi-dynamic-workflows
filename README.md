@@ -89,7 +89,7 @@ This declares `agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `cwd`, an
 
 | Global | Description |
 | --- | --- |
-| `agent(prompt, opts)` | Spawn an isolated subagent. Returns its final text or, with `opts.schema`, a validated object. |
+| `agent(prompt, opts)` | Spawn an isolated subagent. Returns its final text or, with `opts.schema`, a validated object. Use `opts.model` and `opts.thinkingLevel` to override the subagent model and reasoning level. |
 | `parallel(thunks)` | Run an array of `() => agent(...)` thunks concurrently. Results are returned in input order. |
 | `pipeline(items, ...stages)` | Run each item through sequential stages while items fan out. Each stage receives `(prev, original, index)`. |
 | `phase(title)` | Mark the current phase. Used for grouping in the live progress view. |
@@ -128,6 +128,31 @@ const finding = await agent('Find security-sensitive files.', {
 ```
 
 Under the hood this is a Pi `structured_output` tool with `terminate: true`, so the subagent ends on that call without an extra assistant turn.
+
+### Per-agent model and reasoning selection
+
+Pass `opts.model` to run a specific subagent on a different model from the parent session. Model names can be `provider/model-id` or a unique exact model ID from the configured model registry.
+
+Pass `opts.thinkingLevel` to set the subagent reasoning level. Valid values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`; Pi clamps unsupported levels to the selected model's capabilities.
+
+```js
+const findings = await parallel(files.map((file) => () =>
+  agent('Audit ' + file, {
+    label: file,
+    model: 'anthropic/claude-3-5-haiku-20241022',
+    thinkingLevel: 'low',
+  })
+))
+
+const summary = await agent(
+  'Synthesize these findings:\n' + JSON.stringify(findings),
+  {
+    label: 'final synthesis',
+    model: 'claude-opus-4-5',
+    thinkingLevel: 'high',
+  },
+)
+```
 
 ## How it works
 
