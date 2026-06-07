@@ -45,6 +45,21 @@ The model will write a workflow script and call the `workflow` tool. Live progre
 
 Press `Esc` to cancel a running workflow. Active subagents are aborted and surfaced as skipped.
 
+### Running an existing workflow file
+
+The `workflow` tool accepts either an inline `script` string or a `scriptPath` pointing at a JavaScript workflow file. Relative paths resolve from Pi's current working directory. Use `args` to pass runtime input into the script as the global `args` value:
+
+```json
+{
+  "scriptPath": "workflow.js",
+  "args": {
+    "topic": "runtime architecture"
+  }
+}
+```
+
+Provide exactly one of `script` or `scriptPath`.
+
 ## Workflow script shape
 
 A workflow is plain JavaScript. The first statement must export literal metadata. `name` and `description` are required; `phases` is optional documentation for an expected outline. The live progress view is driven by `phase(...)` calls at runtime:

@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -12,21 +14,30 @@ import {
 import { parseWorkflowScript, runWorkflow, type WorkflowRunResult } from "./workflow.js";
 
 const workflowToolSchema = Type.Object({
-  script: Type.String({
-    description: [
-      "Required raw JavaScript workflow script, with no Markdown fences.",
-      "First statement: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. meta.phases is optional documentation; live progress is driven by phase(title).",
-      "Use phase('Name'), agent(prompt, opts), parallel(arrayOfFunctions), pipeline(items, ...stages), log(message), args, and budget. agent opts include label, schema, phase, model, and thinkingLevel. The workflow must call agent() at least once.",
-      "parallel() requires functions, not promises: await parallel(items.map(item => () => agent(...))).",
-    ].join(" "),
-  }),
+  script: Type.Optional(
+    Type.String({
+      description: [
+        "Raw JavaScript workflow script, with no Markdown fences. Provide exactly one of script or scriptPath.",
+        "First statement: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. meta.phases is optional documentation; live progress is driven by phase(title).",
+        "Use phase('Name'), agent(prompt, opts), parallel(arrayOfFunctions), pipeline(items, ...stages), log(message), args, and budget. agent opts include label, schema, phase, model, and thinkingLevel. The workflow must call agent() at least once.",
+        "parallel() requires functions, not promises: await parallel(items.map(item => () => agent(...))).",
+      ].join(" "),
+    }),
+  ),
+  scriptPath: Type.Optional(
+    Type.String({
+      description:
+        "Path to a JavaScript workflow script file. Relative paths resolve from the current Pi working directory. Provide exactly one of script or scriptPath.",
+    }),
+  ),
   args: Type.Optional(
     Type.Any({ description: "Optional JSON value exposed to the workflow script as global `args`." }),
   ),
 });
 
 export type WorkflowToolInput = {
-  script: string;
+  script?: string;
+  scriptPath?: string;
   args?: unknown;
 };
 
@@ -49,13 +60,13 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
     label: "Workflow",
     description: [
       "Execute a deterministic JavaScript workflow that orchestrates multiple subagents with agent(), parallel(), and pipeline().",
-      "script is required raw JavaScript. It must start with export const meta = { name, description } and must call agent() at least once; phases are optional metadata.",
+      "Provide exactly one of script (raw JavaScript) or scriptPath (path to a workflow file). The script must start with export const meta = { name, description } and must call agent() at least once; phases are optional metadata.",
     ].join(" "),
     promptSnippet:
       "Run a deterministic JavaScript workflow. Required script header: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. Use phase(title) at runtime to create progress groups.",
     promptGuidelines: [
       "Use workflow only when the user explicitly asks for a workflow, workflows, fan-out, or multi-agent orchestration.",
-      "For workflow, always pass one raw JavaScript string in the required script parameter; do not include Markdown fences or prose around the script.",
+      "For workflow, pass exactly one of script or scriptPath. Use scriptPath when the user names an existing workflow file; use script only when writing a new one inline. Do not include Markdown fences or prose around inline script.",
       "For workflow, the script's first statement must be `export const meta = { name: 'short_snake_case', description: 'non-empty human description' }`; meta.name and meta.description are required non-empty strings, and meta.phases is optional metadata for a stable upfront outline.",
       "For workflow, write plain JavaScript after the meta export. Do not use TypeScript syntax, imports, require(), fs, Date.now(), Math.random(), or new Date().",
       "For workflow, available globals are agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd, process.cwd(), and budget. Every workflow must call agent() at least once; do not use workflow only to declare phases or return a static object.",
@@ -74,7 +85,8 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       return normalizeWorkflowToolArgs(args);
     },
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const script = normalizeWorkflowScript(params.script);
+      const cwd = options.cwd ?? ctx.cwd;
+      const script = await loadWorkflowScript(params, cwd);
       const parsed = parseWorkflowScript(script);
       let snapshot: WorkflowSnapshot = createWorkflowSnapshot(parsed.meta);
       const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, workflowDisplayOptions);
@@ -92,7 +104,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       let result: WorkflowRunResult;
       try {
         result = await runWorkflow(script, {
-          cwd: options.cwd ?? ctx.cwd,
+          cwd,
           args: params.args,
           signal,
           concurrency: options.concurrency,
@@ -190,10 +202,38 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
 }
 
 function normalizeWorkflowToolArgs(args: unknown): WorkflowToolInput {
-  if (!args || typeof args !== "object") throw new Error("workflow requires an object argument with a script string");
+  if (!args || typeof args !== "object") {
+    throw new Error("workflow requires an object argument with exactly one of `script` or `scriptPath`");
+  }
   const value = args as Record<string, unknown>;
-  if (typeof value.script !== "string") throw new Error("workflow requires `script` to be a string");
-  return { ...value, script: normalizeWorkflowScript(value.script) } as WorkflowToolInput;
+  const hasScript = value.script !== undefined;
+  const hasScriptPath = value.scriptPath !== undefined;
+  if (hasScript === hasScriptPath) {
+    throw new Error("workflow requires exactly one of `script` or `scriptPath`");
+  }
+  if (hasScript && typeof value.script !== "string") throw new Error("workflow `script` must be a string");
+  if (hasScriptPath && typeof value.scriptPath !== "string") {
+    throw new Error("workflow `scriptPath` must be a string");
+  }
+
+  if (hasScript) return { ...value, script: normalizeWorkflowScript(value.script as string) } as WorkflowToolInput;
+  return { ...value, scriptPath: (value.scriptPath as string).trim() } as WorkflowToolInput;
+}
+
+async function loadWorkflowScript(params: WorkflowToolInput, cwd: string): Promise<string> {
+  const hasScript = params.script !== undefined;
+  const hasScriptPath = params.scriptPath !== undefined;
+  if (hasScript === hasScriptPath) throw new Error("workflow requires exactly one of `script` or `scriptPath`");
+  if (hasScript) return normalizeWorkflowScript(params.script as string);
+  if (!params.scriptPath) throw new Error("workflow requires exactly one of `script` or `scriptPath`");
+
+  const workflowPath = path.isAbsolute(params.scriptPath) ? params.scriptPath : path.resolve(cwd, params.scriptPath);
+  try {
+    return normalizeWorkflowScript(await readFile(workflowPath, "utf8"));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to read workflow scriptPath ${workflowPath}: ${message}`);
+  }
 }
 
 function normalizeWorkflowScript(script: string): string {
