@@ -45,6 +45,23 @@ The model will write a workflow script and call the `workflow` tool. Live progre
 
 Press `Esc` to cancel a running workflow. Active subagents are aborted and surfaced as skipped.
 
+### Running an existing workflow file
+
+The `workflow` tool accepts either an inline `script` string or a `scriptPath` pointing at a JavaScript workflow file. Relative paths resolve from Pi's current working directory. Use `args` to pass runtime input into the script as the global `args` value:
+
+```json
+{
+  "scriptPath": "workflow.js",
+  "args": {
+    "topic": "runtime architecture"
+  }
+}
+```
+
+Provide exactly one of `script` or `scriptPath`.
+
+Subagent transcripts are persisted by default. If `args.outputDir` is present, transcripts are written to `args.outputDir/transcripts/manifest.json`; otherwise they are written under `.pi/workflow-transcripts/<workflow-name>/manifest.json` in the current working directory. You can override the location with `transcriptDir`.
+
 ## Workflow script shape
 
 A workflow is plain JavaScript. The first statement must export literal metadata. `name` and `description` are required; `phases` is optional documentation for an expected outline. The live progress view is driven by `phase(...)` calls at runtime:
@@ -89,7 +106,7 @@ This declares `agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `cwd`, an
 
 | Global | Description |
 | --- | --- |
-| `agent(prompt, opts)` | Spawn an isolated subagent. Returns its final text or, with `opts.schema`, a validated object. |
+| `agent(prompt, opts)` | Spawn an isolated subagent. Returns its final text or, with `opts.schema`, a validated object. Use `opts.model` and `opts.thinkingLevel` to override the subagent model and reasoning level. |
 | `parallel(thunks)` | Run an array of `() => agent(...)` thunks concurrently. Results are returned in input order. |
 | `pipeline(items, ...stages)` | Run each item through sequential stages while items fan out. Each stage receives `(prev, original, index)`. |
 | `phase(title)` | Mark the current phase. Used for grouping in the live progress view. |
@@ -129,6 +146,31 @@ const finding = await agent('Find security-sensitive files.', {
 
 Under the hood this is a Pi `structured_output` tool with `terminate: true`, so the subagent ends on that call without an extra assistant turn.
 
+### Per-agent model and reasoning selection
+
+Pass `opts.model` to run a specific subagent on a different model from the parent session. Model names can be `provider/model-id` or a unique exact model ID from the configured model registry.
+
+Pass `opts.thinkingLevel` to set the subagent reasoning level. Valid values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`; Pi clamps unsupported levels to the selected model's capabilities.
+
+```js
+const findings = await parallel(files.map((file) => () =>
+  agent('Audit ' + file, {
+    label: file,
+    model: 'anthropic/claude-3-5-haiku-20241022',
+    thinkingLevel: 'low',
+  })
+))
+
+const summary = await agent(
+  'Synthesize these findings:\n' + JSON.stringify(findings),
+  {
+    label: 'final synthesis',
+    model: 'claude-opus-4-5',
+    thinkingLevel: 'high',
+  },
+)
+```
+
 ## How it works
 
 ```text
@@ -136,12 +178,12 @@ user prompt
   → Pi model writes a workflow script
   → workflow tool parses + runs script in a vm sandbox
   → script calls agent(), parallel(), pipeline()
-  → each agent() spawns an in-memory Pi subagent session
+  → each agent() spawns a fresh persisted Pi subagent session
   → snapshots stream back as compact progress
   → final structured result returned to the parent assistant
 ```
 
-Subagents run in fresh in-memory Pi sessions with the standard coding tools, so they can read files, run shell commands, and call structured output exactly like a normal Pi turn.
+Subagents run in fresh Pi sessions with the standard coding tools, so they can read files, run shell commands, and call structured output exactly like a normal Pi turn. Each subagent transcript is written as a Pi JSONL session file, and `manifest.json` maps workflow labels/phases to transcript paths plus requested model and thinking-level metadata.
 
 ## Library modules
 
@@ -149,7 +191,7 @@ Subagents run in fresh in-memory Pi sessions with the standard coding tools, so 
 | --- | --- |
 | `src/workflow.ts` | AST-validated parser and sandboxed workflow runtime. |
 | `src/workflow-tool.ts` | The Pi `workflow` tool, prompt guidelines, rendering, abort handling. |
-| `src/agent.ts` | `WorkflowAgent`, an in-memory Pi subagent runner. |
+| `src/agent.ts` | `WorkflowAgent`, a persisted Pi subagent runner. |
 | `src/structured-output.ts` | Terminating structured-output tool backed by TypeBox/JSON Schema. |
 | `src/display.ts` | Workflow snapshots and compact text renderers. |
 | `extensions/workflow.ts` | The Pi extension entrypoint. |
@@ -166,7 +208,7 @@ Parser unit tests live in `tests/workflow-parser.test.ts` and cover both accepte
 
 ## Status
 
-This is a prototype. It implements the core workflow primitive (script, subagents, parallel/pipeline, phases, abort, structured output) but does not yet implement persisted or resumable runs, or a `/workflows` manager.
+This is a prototype. It implements the core workflow primitive (script, persisted subagent transcripts, parallel/pipeline, phases, abort, structured output) but does not yet implement resumable workflow runs or a `/workflows` manager.
 
 ## License
 

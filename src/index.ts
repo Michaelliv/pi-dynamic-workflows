@@ -1,4 +1,10 @@
-export type { AgentRunOptions, AgentRunResult, WorkflowAgentOptions } from "./agent.js";
+export type {
+  AgentRunOptions,
+  AgentRunResult,
+  WorkflowAgentOptions,
+  WorkflowAgentTranscript,
+  WorkflowAgentTranscriptStatus,
+} from "./agent.js";
 export { WorkflowAgent } from "./agent.js";
 export type {
   WorkflowAgentSnapshot,
@@ -27,4 +33,4 @@ export type {
 } from "./workflow.js";
 export { parseWorkflowScript, runWorkflow } from "./workflow.js";
 export type { WorkflowToolInput, WorkflowToolOptions } from "./workflow-tool.js";
-export { createWorkflowTool } from "./workflow-tool.js";
+export { createWorkflowTool, resolveWorkflowTranscriptDir } from "./workflow-tool.js";
