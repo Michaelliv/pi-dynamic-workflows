@@ -77,6 +77,15 @@ declare global {
     ...stages: Array<(previous: unknown, original: TItem, index: number) => TResult | Promise<TResult>>
   ): Promise<TResult[]>;
 
+  /** Read and parse a JSON file from the host filesystem. */
+  function readJson<T = JsonValue>(path: string): Promise<T>;
+
+  /** Programmatically write pretty-printed JSON to the host filesystem, creating parent directories. */
+  function writeJson(path: string, value: unknown): Promise<string>;
+
+  /** Create a directory and missing parents on the host filesystem. */
+  function mkdirp(path: string): Promise<string>;
+
   /** Mark the current workflow phase for progress grouping. */
   function phase(title: string): void;
 

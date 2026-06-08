@@ -100,7 +100,7 @@ Reusable workflow files can opt into editor hints for workflow globals:
 /// <reference types="pi-dynamic-workflows/workflow" />
 ```
 
-This declares `agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `cwd`, and `budget` for TypeScript-aware editors.
+This declares `agent`, `parallel`, `pipeline`, `readJson`, `writeJson`, `mkdirp`, `phase`, `log`, `args`, `cwd`, and `budget` for TypeScript-aware editors.
 
 ### Available globals
 
@@ -109,6 +109,9 @@ This declares `agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `cwd`, an
 | `agent(prompt, opts)` | Spawn an isolated subagent. Returns its final text or, with `opts.schema`, a validated object. Use `opts.model` and `opts.thinkingLevel` to override the subagent model and reasoning level. |
 | `parallel(thunks)` | Run an array of `() => agent(...)` thunks concurrently. Results are returned in input order. |
 | `pipeline(items, ...stages)` | Run each item through sequential stages while items fan out. Each stage receives `(prev, original, index)`. |
+| `readJson(path)` | Read and parse a JSON file from the host filesystem. |
+| `writeJson(path, value)` | Programmatically write pretty-printed JSON, creating parent directories. |
+| `mkdirp(path)` | Create a directory and missing parents. |
 | `phase(title)` | Mark the current phase. Used for grouping in the live progress view. |
 | `log(message)` | Append a workflow-level log line. |
 | `args` | Optional JSON value passed in via the tool's `args` parameter. |
@@ -121,10 +124,10 @@ Workflow scripts are evaluated inside a Node `vm` sandbox. The following are int
 
 - `Date.now()`, `new Date()`
 - `Math.random()`
-- `require`, `import`, `fs`, network APIs
+- `require`, `import`, unrestricted `fs`, network APIs
 - spreads, computed keys, template interpolation, function calls inside `meta`
 
-This keeps `meta` parseable, runs reproducible, and the surface area small.
+Use the limited workflow helpers (`readJson`, `writeJson`, `mkdirp`) for deterministic JSON artifacts instead of importing filesystem modules. This keeps `meta` parseable, runs reproducible, and the surface area small.
 
 ### Structured subagent output
 

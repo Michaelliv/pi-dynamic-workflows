@@ -1,3 +1,5 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import vm from "node:vm";
 import type { Node } from "acorn";
 import { parse } from "acorn";
@@ -208,10 +210,44 @@ export async function runWorkflow<T = unknown>(
     );
   };
 
+  const readJson = async (filePath: unknown) => {
+    const target = requireString(filePath, "readJson path");
+    let text: string;
+    try {
+      text = await readFile(target, "utf8");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`readJson failed for ${target}: ${message}`);
+    }
+    try {
+      return JSON.parse(text);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`readJson failed to parse ${target}: ${message}`);
+    }
+  };
+
+  const writeJson = async (filePath: unknown, value: unknown) => {
+    const target = requireString(filePath, "writeJson path");
+    const json = stringifyJsonSerializable(value, "writeJson value");
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, `${json}\n`, "utf8");
+    return target;
+  };
+
+  const mkdirp = async (dirPath: unknown) => {
+    const target = requireString(dirPath, "mkdirp path");
+    await mkdir(target, { recursive: true });
+    return target;
+  };
+
   const context = vm.createContext({
     agent,
     parallel,
     pipeline,
+    readJson,
+    writeJson,
+    mkdirp,
     log,
     phase,
     args: options.args,
@@ -522,6 +558,18 @@ function assertStructuredCloneable(value: unknown, name: string): void {
     throw new Error(
       `${name} must be structured-cloneable; did you forget to await agent(), parallel(), or pipeline()?${detail}`,
     );
+  }
+}
+
+function stringifyJsonSerializable(value: unknown, name: string): string {
+  assertStructuredCloneable(value, name);
+  try {
+    const json = JSON.stringify(value, null, 2);
+    if (json === undefined) throw new Error("top-level undefined is not valid JSON");
+    return json;
+  } catch (error) {
+    const detail = error instanceof Error ? ` ${error.message}` : "";
+    throw new Error(`${name} must be JSON-serializable.${detail}`);
   }
 }
 

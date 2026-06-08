@@ -20,7 +20,7 @@ const workflowToolSchema = Type.Object({
       description: [
         "Raw JavaScript workflow script, with no Markdown fences. Provide exactly one of script or scriptPath.",
         "First statement: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. meta.phases is optional documentation; live progress is driven by phase(title).",
-        "Use phase('Name'), agent(prompt, opts), parallel(arrayOfFunctions), pipeline(items, ...stages), log(message), args, and budget. agent opts include label, schema, phase, model, and thinkingLevel. The workflow must call agent() at least once.",
+        "Use phase('Name'), agent(prompt, opts), parallel(arrayOfFunctions), pipeline(items, ...stages), readJson(path), writeJson(path, value), mkdirp(path), log(message), args, and budget. agent opts include label, schema, phase, model, and thinkingLevel. The workflow must call agent() at least once.",
         "parallel() requires functions, not promises: await parallel(items.map(item => () => agent(...))).",
       ].join(" "),
     }),
@@ -78,7 +78,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, pass exactly one of script or scriptPath. Use scriptPath when the user names an existing workflow file; use script only when writing a new one inline. Do not include Markdown fences or prose around inline script.",
       "For workflow, the script's first statement must be `export const meta = { name: 'short_snake_case', description: 'non-empty human description' }`; meta.name and meta.description are required non-empty strings, and meta.phases is optional metadata for a stable upfront outline.",
       "For workflow, write plain JavaScript after the meta export. Do not use TypeScript syntax, imports, require(), fs, Date.now(), Math.random(), or new Date().",
-      "For workflow, available globals are agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd, process.cwd(), and budget. Every workflow must call agent() at least once; do not use workflow only to declare phases or return a static object.",
+      "For workflow, available globals are agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), readJson(path), writeJson(path, value), mkdirp(path), phase(title), log(message), args, cwd, process.cwd(), and budget. Every workflow must call agent() at least once; do not use workflow only to declare phases or return a static object.",
       "For workflow, call phase(title) when a new group of work starts. Phase names may be conditional or built in a loop; do not predeclare speculative phases just in case.",
       "For workflow, prefer it for decomposable work: repository inspection, independent research/checks, multi-perspective review, or fan-out/fan-in synthesis. Do not use it for a single quick file read/edit or when ordinary tools are enough.",
       "For workflow, parallel() takes functions, not promises: use `await parallel(items.map(item => () => agent('...', { label: '...' })))`, never `await parallel(items.map(item => agent(...)))`. Results are returned in input order.",

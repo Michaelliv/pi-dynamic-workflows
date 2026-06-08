@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { runWorkflow } from "../src/workflow.js";
 
@@ -55,6 +58,27 @@ return { ok: true }
 
   assert.deepEqual(result.phases, ["Inspect API", "Inspect UI"]);
   assert.equal(result.agentCount, 2);
+});
+
+test("runWorkflow exposes deterministic JSON file helpers", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "workflow-json-"));
+  const result = await runWorkflow(
+    `export const meta = {
+  name: 'json_helpers',
+  description: 'Use JSON file helpers'
+}
+
+await mkdirp(args.dir + '/nested')
+await writeJson(args.dir + '/nested/data.json', { ok: true, count: 2 })
+const loaded = await readJson(args.dir + '/nested/data.json')
+await agent('done', { label: 'done' })
+return loaded
+`,
+    { args: { dir }, agent: fakeAgent },
+  );
+
+  assert.deepEqual(result.result, { ok: true, count: 2 });
+  assert.equal(await readFile(path.join(dir, "nested", "data.json"), "utf8"), '{\n  "ok": true,\n  "count": 2\n}\n');
 });
 
 test("runWorkflow passes per-agent model and thinking level to the agent runner", async () => {
