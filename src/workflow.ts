@@ -1,8 +1,14 @@
 import vm from "node:vm";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Node } from "acorn";
 import { parse } from "acorn";
 import type { TSchema } from "typebox";
-import { WorkflowAgent, type WorkflowAgentOptions } from "./agent.js";
+import {
+  resolveAgentModelSpec,
+  WorkflowAgent,
+  type WorkflowAgentOptions,
+  type WorkflowAgentRunReport,
+} from "./agent.js";
 
 export interface WorkflowMetaPhase {
   title: string;
@@ -23,10 +29,18 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   concurrency?: number;
   tokenBudget?: number | null;
   signal?: AbortSignal;
+  pi?: ExtensionAPI;
+  ctx?: ExtensionContext;
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
-  onAgentStart?: (event: { label: string; phase?: string; prompt: string }) => void;
-  onAgentEnd?: (event: { label: string; phase?: string; result: unknown }) => void;
+  onAgentStart?: (event: { label: string; phase?: string; prompt: string; model?: string }) => void;
+  onAgentEnd?: (event: {
+    label: string;
+    phase?: string;
+    result: unknown;
+    report?: WorkflowAgentRunReport;
+  }) => void | Promise<void>;
+  onAgentProgress?: (event: { label: string; phase?: string; report: WorkflowAgentRunReport }) => void | Promise<void>;
 }
 
 export interface WorkflowRunResult<T = unknown> {
@@ -36,6 +50,7 @@ export interface WorkflowRunResult<T = unknown> {
   phases: string[];
   agentCount: number;
   durationMs: number;
+  agents: WorkflowAgentRunReport[];
 }
 
 export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined> {
@@ -43,8 +58,17 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
   phase?: string;
   schema?: TSchemaDef;
   model?: string;
+  pool?: string;
   isolation?: "worktree";
   agentType?: string;
+  context?: "fresh" | "fork";
+  acceptance?: unknown;
+  async?: boolean;
+  savedAgent?: string;
+  /** Per-agent wall-clock timeout. Number values are milliseconds; strings accept 5s/10m/1h. */
+  timeout?: number | string;
+  /** Per-agent wall-clock timeout in milliseconds. Overrides timeout. */
+  timeoutMs?: number;
 }
 
 interface RuntimeState {
@@ -53,10 +77,12 @@ interface RuntimeState {
   phases: string[];
   agentCount: number;
   spent: number;
+  agents: WorkflowAgentRunReport[];
 }
 
 type AnyNode = Node & { [key: string]: any; start: number; end: number };
 
+const MAX_WORKFLOW_AGENTS = 1000;
 const NONDETERMINISM_ERROR =
   "Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable";
 
@@ -66,8 +92,9 @@ export async function runWorkflow<T = unknown>(
 ): Promise<WorkflowRunResult<T>> {
   const started = Date.now();
   const { meta, body } = parseWorkflowScript(script);
-  const state: RuntimeState = { logs: [], phases: [], agentCount: 0, spent: 0 };
+  const state: RuntimeState = { logs: [], phases: [], agentCount: 0, spent: 0, agents: [] };
   const agentRunner = options.agent ?? new WorkflowAgent(options);
+  const poolSource = agentRunner instanceof WorkflowAgent ? agentRunner : new WorkflowAgent(options);
   const concurrency = Math.max(
     1,
     Math.min(options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2), 16),
@@ -105,26 +132,64 @@ export async function runWorkflow<T = unknown>(
     const normalizedOptions = normalizeAgentOptions(agentOptions);
     const assignedPhase = normalizedOptions.phase ?? state.currentPhase;
     const requestedLabel = normalizedOptions.label?.trim();
+    if (state.agentCount >= MAX_WORKFLOW_AGENTS)
+      throw new Error(`workflow agent limit exceeded: max ${MAX_WORKFLOW_AGENTS} agents per run`);
+    const agentNumber = ++state.agentCount;
     const run = limiter(async () => {
-      state.agentCount++;
-      const label = requestedLabel || defaultAgentLabel(assignedPhase, state.agentCount);
-      options.onAgentStart?.({ label, phase: assignedPhase, prompt: taskPrompt });
+      const label = requestedLabel || defaultAgentLabel(assignedPhase, agentNumber);
+      let report: WorkflowAgentRunReport | undefined;
       try {
         throwIfAborted();
-        const result = await agentRunner.run(taskPrompt, {
+        const timeoutMs = normalizedOptions.timeoutMs;
+        const timeoutLabel = timeoutMs ? formatDuration(timeoutMs) : undefined;
+        const childAbort = createLinkedAbortController(options.signal);
+        const runOptions = {
           label,
+          phase: assignedPhase,
           schema: normalizedOptions.schema,
-          signal: options.signal,
+          signal: childAbort.signal,
+          model: normalizedOptions.model,
+          pool: normalizedOptions.pool,
           instructions: buildAgentInstructions(assignedPhase, normalizedOptions),
-        } as any);
-        throwIfAborted();
-        state.spent += estimateTokens(result);
-        options.onAgentEnd?.({ label, phase: assignedPhase, result });
-        return result;
+          agentType: normalizedOptions.agentType,
+          context: normalizedOptions.context,
+          acceptance: normalizedOptions.acceptance,
+          async: normalizedOptions.async,
+          savedAgent: normalizedOptions.savedAgent,
+          timeoutMs: normalizedOptions.timeoutMs,
+          onRunComplete: (value: WorkflowAgentRunReport) => {
+            report = value;
+            state.agents[agentNumber - 1] = value;
+          },
+          onProgress: options.onAgentProgress
+            ? (value: WorkflowAgentRunReport) =>
+                options.onAgentProgress?.({ label, phase: assignedPhase, report: value })
+            : undefined,
+        };
+        const resolvedModel = resolveAgentModelSpec(runOptions, poolSource.modelPools, options.session?.modelRegistry);
+        if (resolvedModel) runOptions.model = resolvedModel;
+        options.onAgentStart?.({ label, phase: assignedPhase, prompt: taskPrompt, model: resolvedModel });
+        try {
+          const agentPromise = agentRunner.run(taskPrompt, runOptions);
+          const result = await withTimeout(
+            agentPromise,
+            timeoutMs,
+            () => {
+              childAbort.abort(new Error(`workflow agent ${label} timed out after ${timeoutLabel}`));
+            },
+            `agent ${label} timed out after ${timeoutLabel}`,
+          );
+          throwIfAborted();
+          state.spent += estimateTokens(result);
+          await options.onAgentEnd?.({ label, phase: assignedPhase, result, report });
+          return result;
+        } finally {
+          childAbort.cleanup();
+        }
       } catch (error) {
         if (options.signal?.aborted) throw error;
         log(`agent ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
-        options.onAgentEnd?.({ label, phase: assignedPhase, result: null });
+        await options.onAgentEnd?.({ label, phase: assignedPhase, result: null, report });
         return null;
       }
     });
@@ -222,6 +287,7 @@ export async function runWorkflow<T = unknown>(
     phases: state.phases,
     agentCount: state.agentCount,
     durationMs: Date.now() - started,
+    agents: state.agents.filter((agent): agent is WorkflowAgentRunReport => Boolean(agent)),
   };
 }
 
@@ -413,6 +479,69 @@ function optionalString(value: unknown, name: string): string | undefined {
   return requireString(value, name);
 }
 
+function normalizeTimeoutMs(timeoutMs: unknown, timeout: unknown): number | undefined {
+  const raw = timeoutMs ?? timeout;
+  if (raw === undefined) return undefined;
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw) || raw <= 0)
+      throw new TypeError("agent timeout must be a positive number of milliseconds");
+    return Math.ceil(raw);
+  }
+  if (typeof raw !== "string") throw new TypeError("agent timeout must be a number or duration string");
+  const match = raw.trim().match(/^(\d+(?:\.\d+)?)(ms|s|m|h)$/i);
+  if (!match) throw new TypeError("agent timeout strings must look like 500ms, 30s, 5m, or 1h");
+  const value = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  const scale = unit === "ms" ? 1 : unit === "s" ? 1000 : unit === "m" ? 60_000 : 3_600_000;
+  return Math.ceil(value * scale);
+}
+
+function formatDuration(ms: number): string {
+  if (ms % 3_600_000 === 0) return `${ms / 3_600_000}h`;
+  if (ms % 60_000 === 0) return `${ms / 60_000}m`;
+  if (ms % 1000 === 0) return `${ms / 1000}s`;
+  return `${ms}ms`;
+}
+
+function createLinkedAbortController(parent?: AbortSignal): {
+  signal: AbortSignal;
+  abort(reason?: unknown): void;
+  cleanup(): void;
+} {
+  const controller = new AbortController();
+  let cleanup = () => {};
+  if (parent?.aborted) {
+    controller.abort(parent.reason);
+  } else if (parent) {
+    const onAbort = () => controller.abort(parent.reason);
+    parent.addEventListener("abort", onAbort, { once: true });
+    cleanup = () => parent.removeEventListener("abort", onAbort);
+  }
+  return { signal: controller.signal, abort: (reason?: unknown) => controller.abort(reason), cleanup };
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number | undefined,
+  onTimeout: () => void,
+  message: string,
+): Promise<T> {
+  if (!timeoutMs) return promise;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(Object.assign(new Error(message), { code: "ETIMEOUT" }));
+      onTimeout();
+    }, timeoutMs);
+  });
+  promise.catch(() => undefined);
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function normalizeAgentOptions(value: unknown): AgentOptions {
   if (!value || typeof value !== "object") throw new TypeError("agent options must be an object");
   const options = value as AgentOptions;
@@ -421,8 +550,17 @@ function normalizeAgentOptions(value: unknown): AgentOptions {
     label: optionalString(options.label, "agent label"),
     phase: optionalString(options.phase, "agent phase"),
     model: optionalString(options.model, "agent model"),
+    pool: optionalString(options.pool, "agent pool"),
     isolation: options.isolation,
     agentType: optionalString(options.agentType, "agent type"),
+    context: options.context === "fresh" || options.context === "fork" ? options.context : undefined,
+    acceptance: options.acceptance,
+    async: options.async === true,
+    savedAgent: optionalString((options as { savedAgent?: unknown }).savedAgent, "saved agent"),
+    timeoutMs: normalizeTimeoutMs(
+      (options as { timeout?: unknown; timeoutMs?: unknown }).timeoutMs,
+      (options as { timeout?: unknown }).timeout,
+    ),
   };
 }
 
@@ -444,9 +582,13 @@ function defaultAgentLabel(phase: string | undefined, index: number): string {
 function buildAgentInstructions(phase: string | undefined, options: AgentOptions): string | undefined {
   const lines = [];
   if (phase) lines.push(`Workflow phase: ${phase}`);
-  if (options.agentType) lines.push(`Act as workflow subagent type: ${options.agentType}`);
+  if (options.agentType) lines.push(`Act as workflow agent type: ${options.agentType}`);
   if (options.isolation) lines.push(`Requested isolation: ${options.isolation}`);
+  if (options.pool) lines.push(`Requested model pool: ${options.pool}`);
   if (options.model) lines.push(`Requested model: ${options.model}`);
+  if (options.context) lines.push(`Requested context: ${options.context}`);
+  if (options.async) lines.push(`Requested async execution`);
+  if (options.timeoutMs) lines.push(`Wall-clock timeout: ${formatDuration(options.timeoutMs)}`);
   return lines.length ? lines.join("\n") : undefined;
 }
 

@@ -31,12 +31,24 @@ declare global {
     phase?: string;
     /** JSON Schema for structured output. When present, the returned value is typed as unknown unless you provide a generic. */
     schema?: TSchema;
-    /** Requested model name. Currently passed as subagent guidance. */
+    /** Requested model name, e.g. cursor/composer-2-5 or kimi-coding/k2p7. */
     model?: string;
+    /** Requested model pool name from settings.json workflowModelPools. */
+    pool?: string;
     /** Requested isolation mode. */
     isolation?: "worktree";
-    /** Requested subagent role/type. */
+    /** Requested workflow agent role/type; used as a pool name fallback. */
     agentType?: string;
+    /** Workflow agent context mode. */
+    context?: "fresh" | "fork";
+    /** Acceptance gate configuration for goal-style handoffs. */
+    acceptance?: unknown;
+    /** Run the workflow agent asynchronously when supported. */
+    async?: boolean;
+    /** Per-agent wall-clock timeout. Number values are milliseconds; strings accept 500ms/30s/5m/1h. */
+    timeout?: number | string;
+    /** Per-agent wall-clock timeout in milliseconds. Overrides timeout. */
+    timeoutMs?: number;
   }
 
   type JsonPrimitive = string | number | boolean | null;
@@ -63,7 +75,7 @@ declare global {
     remaining(): number;
   }
 
-  /** Spawn a subagent. Returns final text unless a structured-output schema is used with an explicit generic. */
+  /** Spawn a workflow agent. Returns final text unless a structured-output schema is used with an explicit generic. */
   function agent<T = string>(prompt: string, options?: WorkflowAgentOptions): Promise<T>;
 
   /** Run independent async tasks concurrently. Pass functions, not already-created promises. */
@@ -84,7 +96,7 @@ declare global {
   /** Optional JSON args passed to the workflow tool. Narrow with a local type assertion when needed. */
   const args: unknown;
 
-  /** Current working directory for the workflow/subagents. */
+  /** Current working directory for the workflow and child agents. */
   const cwd: string;
 
   /** Deterministic process shim exposing only cwd(). */

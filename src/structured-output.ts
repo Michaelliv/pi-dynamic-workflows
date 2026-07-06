@@ -13,10 +13,10 @@ export interface StructuredOutputToolOptions<TSchemaDef extends TSchema> {
 }
 
 /**
- * Create a terminating tool that captures validated params as the subagent result.
+ * Create a terminating tool that captures validated params as the workflow agent result.
  *
  * Pi validates `params` against `schema` before execute() is called. Returning
- * `terminate: true` lets the subagent finish on this tool call without paying for
+ * `terminate: true` lets the workflow agent finish on this tool call without paying for
  * an extra assistant follow-up turn.
  */
 export function createStructuredOutputTool<TSchemaDef extends TSchema>({
@@ -27,7 +27,7 @@ export function createStructuredOutputTool<TSchemaDef extends TSchema>({
   return defineTool({
     name,
     label: "Structured Output",
-    description: "Return the final machine-readable result for this subagent task.",
+    description: "Return the final machine-readable result for this workflow agent task.",
     promptSnippet: "Return final machine-readable output",
     promptGuidelines: [
       `${name} is the final answer channel for this task; call ${name} exactly once when done.`,
