@@ -129,6 +129,19 @@ const finding = await agent('Find security-sensitive files.', {
 
 Under the hood this is a Pi `structured_output` tool with `terminate: true`, so the subagent ends on that call without an extra assistant turn.
 
+### Per-agent model selection
+
+Pass `model` to route a subagent to a specific model. It accepts a fuzzy pattern, a canonical `provider/id`, or a pi-style `model:thinkingLevel` shorthand:
+
+```js
+await agent('Cheap scan of the repo.', { label: 'scan', model: 'haiku' })
+await agent('Careful synthesis.', { label: 'synth', model: 'sonnet:low' })
+await agent('Highest-effort review.', { label: 'review', model: 'sonnet:max' })
+await agent('Explicit target.', { label: 'exact', model: 'anthropic/claude-opus-4-5' })
+```
+
+The trailing `:off|:minimal|:low|:medium|:high|:xhigh|:max` sets the subagent's thinking level; the rest resolves against the model registry. `:max` uses the host's max level when available and otherwise falls back to its highest supported thinking level. Canonical Bedrock ids that end in `:0` are left intact. The resolved `provider/id` is surfaced per agent in the live progress view and the workflow result details.
+
 ## How it works
 
 ```text

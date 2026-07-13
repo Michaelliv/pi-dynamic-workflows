@@ -11,6 +11,7 @@ export interface WorkflowAgentSnapshot {
   status: WorkflowAgentStatus;
   resultPreview?: string;
   error?: string;
+  model?: string;
 }
 
 export interface WorkflowSnapshot {
@@ -164,8 +165,9 @@ export function renderWorkflowLines(snapshot: WorkflowSnapshot, options: Workflo
     const visibleAgents = agents.slice(-maxAgents);
     for (const agent of visibleAgents) {
       const order = `#${agent.id}`;
+      const model = agent.model ? ` [${agent.model}]` : "";
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
-      lines.push(`    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${result}`);
+      lines.push(`    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${model}${result}`);
     }
     if (agents.length > visibleAgents.length)
       lines.push(`    … ${agents.length - visibleAgents.length} earlier agents`);
@@ -175,8 +177,9 @@ export function renderWorkflowLines(snapshot: WorkflowSnapshot, options: Workflo
   if (unphased.length) {
     lines.push("  Unphased");
     for (const agent of unphased.slice(-maxAgents)) {
+      const model = agent.model ? ` [${agent.model}]` : "";
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
-      lines.push(`    #${agent.id} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${result}`);
+      lines.push(`    #${agent.id} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${model}${result}`);
     }
   }
 

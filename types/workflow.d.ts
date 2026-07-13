@@ -31,7 +31,7 @@ declare global {
     phase?: string;
     /** JSON Schema for structured output. When present, the returned value is typed as unknown unless you provide a generic. */
     schema?: TSchema;
-    /** Requested model name. Currently passed as subagent guidance. */
+    /** Model pattern or ID to run this subagent on (e.g. 'haiku', 'sonnet:low', or 'anthropic/claude-opus-4-5'). A trailing ':off'|':minimal'|':low'|':medium'|':high'|':xhigh'|':max' sets the thinking level; ':max' falls back to the host's highest supported level when needed. */
     model?: string;
     /** Requested isolation mode. */
     isolation?: "worktree";

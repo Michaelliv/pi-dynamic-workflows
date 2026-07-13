@@ -26,7 +26,8 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
   onAgentStart?: (event: { label: string; phase?: string; prompt: string }) => void;
-  onAgentEnd?: (event: { label: string; phase?: string; result: unknown }) => void;
+  onAgentModel?: (event: { label: string; phase?: string; model: string }) => void;
+  onAgentEnd?: (event: { label: string; phase?: string; result: unknown; model?: string }) => void;
 }
 
 export interface WorkflowRunResult<T = unknown> {
@@ -109,22 +110,28 @@ export async function runWorkflow<T = unknown>(
       state.agentCount++;
       const label = requestedLabel || defaultAgentLabel(assignedPhase, state.agentCount);
       options.onAgentStart?.({ label, phase: assignedPhase, prompt: taskPrompt });
+      let resolvedModel: string | undefined;
       try {
         throwIfAborted();
         const result = await agentRunner.run(taskPrompt, {
           label,
           schema: normalizedOptions.schema,
           signal: options.signal,
+          model: normalizedOptions.model,
+          onModel: (model: string) => {
+            resolvedModel = model;
+            options.onAgentModel?.({ label, phase: assignedPhase, model });
+          },
           instructions: buildAgentInstructions(assignedPhase, normalizedOptions),
         } as any);
         throwIfAborted();
         state.spent += estimateTokens(result);
-        options.onAgentEnd?.({ label, phase: assignedPhase, result });
+        options.onAgentEnd?.({ label, phase: assignedPhase, result, model: resolvedModel });
         return result;
       } catch (error) {
         if (options.signal?.aborted) throw error;
         log(`agent ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
-        options.onAgentEnd?.({ label, phase: assignedPhase, result: null });
+        options.onAgentEnd?.({ label, phase: assignedPhase, result: null, model: resolvedModel });
         return null;
       }
     });
@@ -446,7 +453,6 @@ function buildAgentInstructions(phase: string | undefined, options: AgentOptions
   if (phase) lines.push(`Workflow phase: ${phase}`);
   if (options.agentType) lines.push(`Act as workflow subagent type: ${options.agentType}`);
   if (options.isolation) lines.push(`Requested isolation: ${options.isolation}`);
-  if (options.model) lines.push(`Requested model: ${options.model}`);
   return lines.length ? lines.join("\n") : undefined;
 }
 

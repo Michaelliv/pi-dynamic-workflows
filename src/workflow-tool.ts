@@ -121,6 +121,13 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
             });
             update();
           },
+          onAgentModel(event) {
+            const agent = [...snapshot.agents]
+              .reverse()
+              .find((item) => item.label === event.label && item.status === "running");
+            if (agent) agent.model = event.model;
+            update();
+          },
           onAgentEnd(event) {
             const agent = [...snapshot.agents]
               .reverse()
@@ -128,6 +135,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
             if (agent) {
               agent.status = event.result === null ? "error" : "done";
               agent.resultPreview = preview(event.result);
+              if (event.model) agent.model = event.model;
             }
             update();
           },

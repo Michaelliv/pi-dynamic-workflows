@@ -103,6 +103,65 @@ return { ok: true }
   );
 });
 
+test("runWorkflow forwards the model option into the agent runner", async () => {
+  const calls: any[] = [];
+  const capturingAgent = {
+    async run(_prompt: string, opts: any): Promise<string> {
+      calls.push(opts);
+      return "ok";
+    },
+  };
+
+  await runWorkflow(
+    `export const meta = {
+  name: 'model_forwarding',
+  description: 'Forward the model option'
+}
+
+phase('Run')
+await agent('do it', { label: 'x', model: 'some-model' })
+return { ok: true }
+`,
+    { agent: capturingAgent },
+  );
+
+  assert.equal(calls[0].model, "some-model");
+});
+
+test("runWorkflow surfaces the resolved model before agent completion", async () => {
+  const modelReportingAgent = {
+    async run(_prompt: string, opts: any): Promise<string> {
+      opts.onModel?.("anthropic/claude-haiku-4-5");
+      return "ok";
+    },
+  };
+  const events: string[] = [];
+  const ended: any[] = [];
+
+  await runWorkflow(
+    `export const meta = {
+  name: 'model_reporting',
+  description: 'Report the resolved model'
+}
+
+phase('Run')
+await agent('do it', { label: 'x', model: 'haiku' })
+return { ok: true }
+`,
+    {
+      agent: modelReportingAgent,
+      onAgentModel: (event) => events.push(`model:${event.model}`),
+      onAgentEnd: (event) => {
+        events.push("end");
+        ended.push(event);
+      },
+    },
+  );
+
+  assert.deepEqual(events, ["model:anthropic/claude-haiku-4-5", "end"]);
+  assert.equal(ended[0].model, "anthropic/claude-haiku-4-5");
+});
+
 test("runWorkflow allows prompts that mention nondeterministic API names", async () => {
   const result = await runWorkflow(
     `export const meta = {
