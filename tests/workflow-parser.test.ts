@@ -22,6 +22,17 @@ test("parseWorkflowScript accepts literal workflow metadata", () => {
   assert.doesNotMatch(parsed.body, /export const meta/);
 });
 
+test("parseWorkflowScript normalizes legacy string phases", () => {
+  const parsed = parseWorkflowScript(`export const meta = {
+  name: 'legacy_phase_outline',
+  description: 'Accept a compact legacy outline',
+  phases: ['Scan', 'Synthesize']
+}
+phase('Scan')
+return { ok: true }`);
+  assert.deepEqual(parsed.meta.phases, [{ title: "Scan" }, { title: "Synthesize" }]);
+});
+
 test("parseWorkflowScript accepts static template literals", () => {
   const parsed = parseWorkflowScript("export const meta = { name: `demo`, description: `static` }\nreturn true");
   assert.equal(parsed.meta.name, "demo");

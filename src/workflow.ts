@@ -255,8 +255,7 @@ export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body:
   }
   if (!declarator.init) throw new Error("meta must have a literal value");
 
-  const meta = evaluateLiteral(declarator.init, "meta");
-  validateMeta(meta);
+  const meta = validateMeta(evaluateLiteral(declarator.init, "meta"));
 
   return {
     meta,
@@ -367,7 +366,7 @@ function staticStringOf(node: AnyNode | undefined): string | undefined {
   return undefined;
 }
 
-function validateMeta(meta: unknown): asserts meta is WorkflowMeta {
+function validateMeta(meta: unknown): WorkflowMeta {
   if (!meta || typeof meta !== "object") throw new Error("meta must be an object");
   const value = meta as WorkflowMeta;
   if (typeof value.name !== "string" || !value.name.trim()) throw new Error("meta.name must be a non-empty string");
@@ -375,14 +374,19 @@ function validateMeta(meta: unknown): asserts meta is WorkflowMeta {
     throw new Error("meta.description must be a non-empty string");
   if (value.whenToUse !== undefined && typeof value.whenToUse !== "string")
     throw new Error("meta.whenToUse must be a string");
-  if (value.phases !== undefined) {
-    if (!Array.isArray(value.phases)) throw new Error("meta.phases must be an array");
-    for (const phase of value.phases) {
-      if (!phase || typeof phase !== "object" || typeof (phase as WorkflowMetaPhase).title !== "string") {
-        throw new Error("each meta phase must have a title string");
-      }
+  if (value.phases === undefined) return value;
+  if (!Array.isArray(value.phases)) throw new Error("meta.phases must be an array");
+
+  const phases = value.phases.map((phase) => {
+    // Older workflow producers emitted a compact string outline. Normalize it
+    // at the parser boundary so downstream code always receives { title }.
+    if (typeof phase === "string") return { title: phase };
+    if (!phase || typeof phase !== "object" || typeof (phase as WorkflowMetaPhase).title !== "string") {
+      throw new Error("each meta phase must have a title string");
     }
-  }
+    return phase as WorkflowMetaPhase;
+  });
+  return { ...value, phases };
 }
 
 function createLimiter(limit: number) {
