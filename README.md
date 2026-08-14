@@ -89,25 +89,26 @@ This declares `agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `cwd`, an
 
 | Global | Description |
 | --- | --- |
-| `agent(prompt, opts)` | Spawn an isolated subagent. Returns its final text or, with `opts.schema`, a validated object. |
-| `parallel(thunks)` | Run an array of `() => agent(...)` thunks concurrently. Results are returned in input order. |
-| `pipeline(items, ...stages)` | Run each item through sequential stages while items fan out. Each stage receives `(prev, original, index)`. |
+| `agent(prompt, opts)` | Spawn an isolated subagent. Returns its final text or, with `opts.schema`, a validated object. Resolves to `null` if the subagent fails — null-check before synthesizing. |
+| `parallel(thunks)` | Run an array of `() => agent(...)` thunks concurrently. Results are returned in input order, with `null` in place of failed thunks. |
+| `pipeline(items, ...stages)` | Run each item through sequential stages while items fan out. Each stage receives `(prev, original, index)`. An item whose stage fails resolves to `null`. |
 | `phase(title)` | Mark the current phase. Used for grouping in the live progress view. |
 | `log(message)` | Append a workflow-level log line. |
 | `args` | Optional JSON value passed in via the tool's `args` parameter. |
 | `cwd`, `process.cwd()` | Current working directory for subagents. |
 | `budget` | `{ total, spent(), remaining() }` token budget tracker. |
+| `Date` | Deterministic subset only: `Date.parse()` and `Date.UTC()`. |
 
 ### Determinism rules
 
 Workflow scripts are evaluated inside a Node `vm` sandbox. The following are intentionally unavailable:
 
-- `Date.now()`, `new Date()`
-- `Math.random()`
+- `Date.now()`, `new Date()` — the sandbox `Date` exposes only the deterministic statics `Date.parse()` and `Date.UTC()`; `now()` throws and the shim is not a constructor
+- `Math.random()` — the sandbox `Math` inherits every other method but `random()` throws, even when aliased (`const f = Math.random; f()`)
 - `require`, `import`, `fs`, network APIs
 - spreads, computed keys, template interpolation, function calls inside `meta`
 
-This keeps `meta` parseable, runs reproducible, and the surface area small.
+The parser rejects the direct forms up front; the runtime shims close aliasing bypasses. This keeps `meta` parseable, runs reproducible, and the surface area small.
 
 ### Structured subagent output
 

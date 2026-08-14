@@ -60,6 +60,40 @@ type AnyNode = Node & { [key: string]: any; start: number; end: number };
 const NONDETERMINISM_ERROR =
   "Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable";
 
+const throwNondeterministic = (): never => {
+  throw new Error(NONDETERMINISM_ERROR);
+};
+
+/**
+ * Math with random() replaced by a throwing stub. Other methods are inherited
+ * from the host Math object. The AST check rejects literal `Math.random()`
+ * calls, but an alias (`const f = Math.random; f()`) slips past it; this shim
+ * closes that hole at runtime.
+ */
+function createDeterministicMath(): Math {
+  const shim = Object.create(Math) as Math;
+  Object.defineProperty(shim, "random", {
+    value: throwNondeterministic,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
+  return Object.freeze(shim);
+}
+
+/**
+ * Deterministic Date subset: parse() and UTC() work, now() throws, and the
+ * shim is a plain object so `new Date()` is a TypeError even if the AST check
+ * is bypassed by aliasing.
+ */
+function createDeterministicDate(): Pick<DateConstructor, "parse" | "UTC" | "now"> {
+  return Object.freeze({
+    parse: Date.parse.bind(Date),
+    UTC: Date.UTC.bind(Date),
+    now: throwNondeterministic,
+  });
+}
+
 export async function runWorkflow<T = unknown>(
   script: string,
   options: WorkflowRunOptions = {},
@@ -200,7 +234,8 @@ export async function runWorkflow<T = unknown>(
       error: (m: unknown) => log(`[error] ${String(m)}`),
     },
     JSON,
-    Math,
+    Math: createDeterministicMath(),
+    Date: createDeterministicDate(),
     Array,
     Object,
     String,
@@ -212,8 +247,14 @@ export async function runWorkflow<T = unknown>(
   });
 
   const wrapped = `(async () => {\n${body}\n})()`;
-  const result = await new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context);
-  await Promise.allSettled([...pendingAgentRuns]);
+  let result: unknown;
+  try {
+    result = await new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context);
+  } finally {
+    // A script that throws after firing un-awaited agent() calls must not
+    // leave real subagent sessions running detached; always drain them.
+    await Promise.allSettled([...pendingAgentRuns]);
+  }
   assertStructuredCloneable(result, "workflow result");
   return {
     meta,

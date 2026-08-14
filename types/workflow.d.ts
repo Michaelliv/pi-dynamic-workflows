@@ -63,17 +63,20 @@ declare global {
     remaining(): number;
   }
 
-  /** Spawn a subagent. Returns final text unless a structured-output schema is used with an explicit generic. */
-  function agent<T = string>(prompt: string, options?: WorkflowAgentOptions): Promise<T>;
+  /** Spawn a subagent. Returns final text unless a structured-output schema is used with an explicit generic.
+   * Resolves to null if the subagent fails; check for null before using the result. */
+  function agent<T = string>(prompt: string, options?: WorkflowAgentOptions): Promise<T | null>;
 
-  /** Run independent async tasks concurrently. Pass functions, not already-created promises. */
-  function parallel<T>(thunks: Array<() => Promise<T>>): Promise<T[]>;
+  /** Run independent async tasks concurrently. Pass functions, not already-created promises.
+   * Failed thunks resolve to null in their input position; the array order always matches the input order. */
+  function parallel<T>(thunks: Array<() => Promise<T>>): Promise<Array<T | null>>;
 
-  /** Run each item through sequential async stages while different items may run concurrently. */
+  /** Run each item through sequential async stages while different items may run concurrently.
+   * An item whose stage fails resolves to null in its input position. */
   function pipeline<TItem, TResult = unknown>(
     items: TItem[],
     ...stages: Array<(previous: unknown, original: TItem, index: number) => TResult | Promise<TResult>>
-  ): Promise<TResult[]>;
+  ): Promise<Array<TResult | null>>;
 
   /** Mark the current workflow phase for progress grouping. */
   function phase(title: string): void;
