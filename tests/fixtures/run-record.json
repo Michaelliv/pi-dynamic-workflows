@@ -1,0 +1,97 @@
+{
+  "schema": 1,
+  "runId": "wf_37f4798f9b75bed1",
+  "name": "store_demo",
+  "dialect": "pi-js",
+  "harness": "pi",
+  "writer": "pi-dynamic-workflows@1.0.1",
+  "scriptPath": "/var/folders/73/fpmxjdl1157_w3qpkftf68kw0000gn/T/run-store-fixture-FVqYya/workflow-runs/wf_37f4798f9b75bed1/script.js",
+  "cwd": "/var/folders/73/fpmxjdl1157_w3qpkftf68kw0000gn/T/run-store-fixture-FVqYya",
+  "args": {
+    "area": "test"
+  },
+  "status": "completed",
+  "createdAt": "2026-08-21T10:31:31.088Z",
+  "startedAt": "2026-08-21T10:31:31.088Z",
+  "finishedAt": "2026-08-21T10:31:31.093Z",
+  "lastWriteAt": "2026-08-21T10:31:31.093Z",
+  "error": null,
+  "result": {
+    "ok": true,
+    "inventory": "full result for collect the inventory: detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail ",
+    "summary": "full result for write the summary: detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail "
+  },
+  "snapshot": {
+    "name": "store_demo",
+    "description": "exercise the run store",
+    "phases": [
+      "Gather",
+      "Write"
+    ],
+    "logs": [],
+    "agents": [
+      {
+        "id": 1,
+        "label": "inventory",
+        "phase": "Gather",
+        "prompt": "collect the inventory",
+        "status": "done",
+        "startedAt": "2026-08-21T10:31:31.091Z",
+        "resultPreview": "full result for collect the inventory: detail detail detail detail detail detai…",
+        "endedAt": "2026-08-21T10:31:31.092Z",
+        "tokens": {
+          "input": 70,
+          "output": 30,
+          "cacheRead": 10,
+          "cacheWrite": 1,
+          "total": 111
+        },
+        "cost": 0.0042,
+        "toolCalls": 3,
+        "result": "full result for collect the inventory: detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail "
+      },
+      {
+        "id": 2,
+        "label": "summary",
+        "phase": "Write",
+        "prompt": "write the summary",
+        "status": "done",
+        "startedAt": "2026-08-21T10:31:31.092Z",
+        "resultPreview": "full result for write the summary: detail detail detail detail detail detail de…",
+        "endedAt": "2026-08-21T10:31:31.092Z",
+        "tokens": {
+          "input": 70,
+          "output": 30,
+          "cacheRead": 10,
+          "cacheWrite": 1,
+          "total": 111
+        },
+        "cost": 0.0042,
+        "toolCalls": 3,
+        "result": "full result for write the summary: detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail "
+      }
+    ],
+    "agentCount": 2,
+    "runningCount": 0,
+    "doneCount": 2,
+    "errorCount": 0,
+    "currentPhase": "Write",
+    "result": {
+      "ok": true,
+      "inventory": "full result for collect the inventory: detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail ",
+      "summary": "full result for write the summary: detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail detail "
+    },
+    "durationMs": 3
+  },
+  "totals": {
+    "agents": 2,
+    "inputTokens": 140,
+    "outputTokens": 60,
+    "cacheReadTokens": 20,
+    "cacheWriteTokens": 2,
+    "totalTokens": 222,
+    "toolCalls": 6,
+    "cost": 0.0084,
+    "durationMs": 3
+  }
+}

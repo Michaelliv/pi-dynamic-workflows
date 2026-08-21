@@ -5,6 +5,7 @@ import {
   createCodingTools,
   getAgentDir,
   SessionManager,
+  type SessionStats,
   SettingsManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -27,6 +28,8 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   tools?: ToolDefinition[];
   instructions?: string;
   signal?: AbortSignal;
+  /** Receives the session's real usage statistics, read before the session is disposed. */
+  onStats?: (stats: SessionStats) => void;
 }
 
 export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef extends TSchema
@@ -89,6 +92,15 @@ export class WorkflowAgent {
       return this.lastAssistantText(session.messages) as AgentRunResult<TSchemaDef>;
     } finally {
       removeAbortListener?.();
+      if (options.onStats) {
+        // Stats must be read BEFORE dispose; guarded because host forks may
+        // omit getSessionStats, and stats are best-effort either way.
+        try {
+          if (typeof session.getSessionStats === "function") options.onStats(session.getSessionStats());
+        } catch {
+          // never fail the agent for usage accounting
+        }
+      }
       session.dispose();
     }
   }

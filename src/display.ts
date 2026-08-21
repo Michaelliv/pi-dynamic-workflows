@@ -11,6 +11,14 @@ export interface WorkflowAgentSnapshot {
   status: WorkflowAgentStatus;
   resultPreview?: string;
   error?: string;
+  /** Wall-clock start of the agent run (ISO 8601). */
+  startedAt?: string;
+  /** Wall-clock end of the agent run (ISO 8601). */
+  endedAt?: string;
+  /** Real token usage from the agent session, when the host reports it. */
+  tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+  cost?: number;
+  toolCalls?: number;
 }
 
 export interface WorkflowSnapshot {

@@ -1,6 +1,7 @@
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import type { WorkflowAgent } from "./agent.js";
 import {
   createToolUpdateWorkflowDisplay,
   createWorkflowSnapshot,
@@ -9,6 +10,7 @@ import {
   renderWorkflowText,
   type WorkflowSnapshot,
 } from "./display.js";
+import { openRunRecord, type RunStoreOptions } from "./run-store.js";
 import { parseWorkflowScript, runWorkflow, type WorkflowRunResult } from "./workflow.js";
 
 const workflowToolSchema = Type.Object({
@@ -41,6 +43,10 @@ const workflowDisplayOptions = {
 export interface WorkflowToolOptions {
   cwd?: string;
   concurrency?: number;
+  /** Override the subagent runner (used by tests and embedders). */
+  agent?: Pick<WorkflowAgent, "run">;
+  /** Run-store settings; pass false to disable persistence entirely. */
+  runStore?: RunStoreOptions | false;
 }
 
 export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefinition<typeof workflowToolSchema, any> {
@@ -78,10 +84,22 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       const parsed = parseWorkflowScript(script);
       let snapshot: WorkflowSnapshot = createWorkflowSnapshot(parsed.meta);
       const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, workflowDisplayOptions);
+      const run =
+        options.runStore === false
+          ? null
+          : openRunRecord({
+              script,
+              name: parsed.meta.name,
+              cwd: options.cwd ?? ctx.cwd,
+              args: params.args,
+              options: options.runStore,
+            });
+      run?.write(snapshot);
 
       const update = () => {
         snapshot = recomputeWorkflowSnapshot(snapshot);
         display.update(snapshot);
+        run?.write(snapshot);
       };
 
       const recordPhase = (title: string | undefined) => {
@@ -95,6 +113,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           cwd: options.cwd ?? ctx.cwd,
           args: params.args,
           signal,
+          agent: options.agent,
           concurrency: options.concurrency,
           session: {
             modelRegistry: ctx.modelRegistry,
@@ -118,6 +137,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
               phase: event.phase,
               prompt: event.prompt,
               status: "running",
+              startedAt: new Date().toISOString(),
             });
             update();
           },
@@ -128,6 +148,20 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
             if (agent) {
               agent.status = event.result === null ? "error" : "done";
               agent.resultPreview = preview(event.result);
+              agent.endedAt = new Date().toISOString();
+              const tokens = event.stats?.tokens;
+              if (tokens) {
+                agent.tokens = {
+                  input: tokens.input ?? 0,
+                  output: tokens.output ?? 0,
+                  cacheRead: tokens.cacheRead ?? 0,
+                  cacheWrite: tokens.cacheWrite ?? 0,
+                  total: tokens.total ?? 0,
+                };
+              }
+              if (typeof event.stats?.cost === "number") agent.cost = event.stats.cost;
+              if (typeof event.stats?.toolCalls === "number") agent.toolCalls = event.stats.toolCalls;
+              run?.recordAgentResult(agent.id, event.result);
             }
             update();
           },
@@ -142,31 +176,38 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           }
           snapshot = recomputeWorkflowSnapshot(snapshot);
           display.complete(snapshot);
+          run?.finish(snapshot, { status: "killed", error: "aborted" });
           throw new Error("Workflow was aborted");
         }
+        snapshot = recomputeWorkflowSnapshot(snapshot);
+        run?.finish(snapshot, { status: "failed", error: error instanceof Error ? error.message : String(error) });
         throw error;
       }
 
       if (result.agentCount === 0) {
-        throw new Error(
-          "workflow scripts must call agent() at least once; this workflow declared phases but did not run any subagents",
-        );
+        const message =
+          "workflow scripts must call agent() at least once; this workflow declared phases but did not run any subagents";
+        snapshot = recomputeWorkflowSnapshot(snapshot);
+        run?.finish(snapshot, { status: "failed", error: message });
+        throw new Error(message);
       }
 
       snapshot.result = result.result;
       snapshot.durationMs = result.durationMs;
       snapshot = recomputeWorkflowSnapshot(snapshot);
       display.complete(snapshot);
+      run?.finish(snapshot, { status: "completed" });
 
       return {
         content: [
           {
             type: "text",
-            text: `Workflow ${result.meta.name} completed with ${result.agentCount} agent(s).\n\nResult:\n${JSON.stringify(result.result, null, 2)}`,
+            text: `Workflow ${result.meta.name} completed with ${result.agentCount} agent(s).${run ? `\nRun: ${run.runId}` : ""}\n\nResult:\n${JSON.stringify(result.result, null, 2)}`,
           },
         ],
         details: {
           ...snapshot,
+          ...(run ? { runId: run.runId } : {}),
           meta: result.meta,
           phases: result.phases,
           logs: result.logs,
