@@ -16,6 +16,16 @@ export {
   renderWorkflowLines,
   renderWorkflowText,
 } from "./display.js";
+export type {
+  OpenRunRecordInput,
+  ResolvedRunStoreConfig,
+  RunRecordWriter,
+  RunStoreOptions,
+  WorkflowRunRecord,
+  WorkflowRunRecordAgent,
+  WorkflowRunStatus,
+} from "./run-store.js";
+export { detectHarness, mintRunId, openRunRecord, resolveRunStoreConfig } from "./run-store.js";
 export type { StructuredOutputCapture, StructuredOutputToolOptions } from "./structured-output.js";
 export { createStructuredOutputTool } from "./structured-output.js";
 export type {

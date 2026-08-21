@@ -1,4 +1,5 @@
 import vm from "node:vm";
+import type { SessionStats } from "@earendil-works/pi-coding-agent";
 import type { Node } from "acorn";
 import { parse } from "acorn";
 import type { TSchema } from "typebox";
@@ -26,7 +27,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
   onAgentStart?: (event: { label: string; phase?: string; prompt: string }) => void;
-  onAgentEnd?: (event: { label: string; phase?: string; result: unknown }) => void;
+  onAgentEnd?: (event: { label: string; phase?: string; result: unknown; stats?: SessionStats }) => void;
 }
 
 export interface WorkflowRunResult<T = unknown> {
@@ -109,6 +110,7 @@ export async function runWorkflow<T = unknown>(
       state.agentCount++;
       const label = requestedLabel || defaultAgentLabel(assignedPhase, state.agentCount);
       options.onAgentStart?.({ label, phase: assignedPhase, prompt: taskPrompt });
+      let usage: SessionStats | undefined;
       try {
         throwIfAborted();
         const result = await agentRunner.run(taskPrompt, {
@@ -116,15 +118,20 @@ export async function runWorkflow<T = unknown>(
           schema: normalizedOptions.schema,
           signal: options.signal,
           instructions: buildAgentInstructions(assignedPhase, normalizedOptions),
+          onStats(stats: SessionStats) {
+            usage = stats;
+          },
         } as any);
         throwIfAborted();
-        state.spent += estimateTokens(result);
-        options.onAgentEnd?.({ label, phase: assignedPhase, result });
+        // Prefer the session's real token count; the estimate remains the
+        // fallback for runners that report no stats.
+        state.spent += usage?.tokens?.total ?? estimateTokens(result);
+        options.onAgentEnd?.({ label, phase: assignedPhase, result, stats: usage });
         return result;
       } catch (error) {
         if (options.signal?.aborted) throw error;
         log(`agent ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
-        options.onAgentEnd?.({ label, phase: assignedPhase, result: null });
+        options.onAgentEnd?.({ label, phase: assignedPhase, result: null, stats: usage });
         return null;
       }
     });

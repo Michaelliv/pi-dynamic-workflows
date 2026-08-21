@@ -143,6 +143,43 @@ user prompt
 
 Subagents run in fresh in-memory Pi sessions with the standard coding tools, so they can read files, run shell commands, and call structured output exactly like a normal Pi turn.
 
+## Run store
+
+Every workflow execution persists a run record (first slice of the
+persisted/resumable-workflows epic):
+
+```text
+<root>/workflow-runs/<runId>/script.js   the inline script, persisted verbatim
+<root>/workflow-runs/<runId>/task.json   the run record
+```
+
+- `runId` is `wf_<16 hex chars>`, minted per execution and surfaced in the
+  tool's final text (`Run: wf_…`) and result details.
+- `task.json` is rewritten atomically (tmp + rename) on every snapshot update
+  and once more at terminal, so external readers always see complete JSON with
+  a fresh `lastWriteAt`. Status vocabulary: `running`, `completed`, `failed`,
+  `killed` (aborted).
+- The record embeds the full workflow snapshot enriched at source: per-agent
+  wall-clock `startedAt`/`endedAt`, real token usage and cost from
+  `AgentSession.getSessionStats()` (read before the session is disposed), and
+  each agent's full result text — the 80-char preview remains display-only.
+- The record carries explicit `harness` (`pi` | `omp`) and `dialect`
+  (`pi-js` | `omp-js`) stamps. The host is detected from the agent dir path
+  (`~/.pi/...` vs `~/.omp/...`) and can be overridden.
+
+Configuration (highest precedence first):
+
+1. `createWorkflowTool({ runStore: { enabled, root, harness } })`, or
+   `runStore: false` to disable persistence entirely.
+2. Environment: `PI_DYNAMIC_WORKFLOWS_RUN_STORE` (a store root path, or
+   `0`/`false`/`off` to disable) and `PI_DYNAMIC_WORKFLOWS_HARNESS`.
+3. Host config file `<agentDir>/extensions/pi-dynamic-workflows/config.json`:
+   `{ "runStore": { "enabled": true, "root": "/path", "harness": "pi" } }`.
+4. Defaults: enabled, rooted at the host agent dir (`getAgentDir()`), harness
+   detected from that dir.
+
+Persistence is best-effort: a store failure never fails a running workflow.
+
 ## Library modules
 
 | File | Purpose |
@@ -150,6 +187,7 @@ Subagents run in fresh in-memory Pi sessions with the standard coding tools, so 
 | `src/workflow.ts` | AST-validated parser and sandboxed workflow runtime. |
 | `src/workflow-tool.ts` | The Pi `workflow` tool, prompt guidelines, rendering, abort handling. |
 | `src/agent.ts` | `WorkflowAgent`, an in-memory Pi subagent runner. |
+| `src/run-store.ts` | Persistent run records under `workflow-runs/<runId>/`. |
 | `src/structured-output.ts` | Terminating structured-output tool backed by TypeBox/JSON Schema. |
 | `src/display.ts` | Workflow snapshots and compact text renderers. |
 | `extensions/workflow.ts` | The Pi extension entrypoint. |
@@ -166,7 +204,7 @@ Parser unit tests live in `tests/workflow-parser.test.ts` and cover both accepte
 
 ## Status
 
-This is a prototype. It implements the core workflow primitive (script, subagents, parallel/pipeline, phases, abort, structured output) but does not yet implement persisted or resumable runs, or a `/workflows` manager.
+This is a prototype. It implements the core workflow primitive (script, subagents, parallel/pipeline, phases, abort, structured output) and persists a run record per execution, but does not yet implement resumable runs or a `/workflows` manager.
 
 ## License
 
