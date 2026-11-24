@@ -1,4 +1,4 @@
-import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ModelRegistry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
@@ -24,6 +24,15 @@ const workflowToolSchema = Type.Object({
     Type.Any({ description: "Optional JSON value exposed to the workflow script as global `args`." }),
   ),
 });
+
+/**
+ * The runtime behind an extension's registry. `ModelRegistry` is a compatibility facade over it
+ * and keeps the runtime private, while `createAgentSession` on pi 1.x takes the runtime itself.
+ * Typed loosely because this package's pinned pi types predate `ModelRuntime`.
+ */
+function registryRuntime(registry: ModelRegistry): unknown {
+  return (registry as unknown as { runtime?: unknown }).runtime;
+}
 
 export type WorkflowToolInput = {
   script: string;
@@ -97,9 +106,13 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           signal,
           concurrency: options.concurrency,
           session: {
+            // Pi 1.x replaced `modelRegistry` with a `ModelRuntime`: without it the child
+            // builds its own runtime from agentDir and cannot see providers an extension
+            // registers (pi-multi-account pools, for one). `modelRegistry` stays for older pi.
+            ...(registryRuntime(ctx.modelRegistry) === undefined ? {} : { modelRuntime: registryRuntime(ctx.modelRegistry) }),
             modelRegistry: ctx.modelRegistry,
             model: ctx.model,
-          },
+          } as Record<string, unknown>,
           onLog(message) {
             snapshot.logs.push(message);
             update();
